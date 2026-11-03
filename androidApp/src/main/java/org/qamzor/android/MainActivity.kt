@@ -1,7 +1,9 @@
 package org.qamzor.android
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.app.AlertDialog
 import android.graphics.Bitmap
@@ -17,8 +19,11 @@ import android.os.ParcelFileDescriptor
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.text.TextUtils
@@ -33,6 +38,7 @@ import android.widget.Switch
 import android.widget.TextView
 import androidx.documentfile.provider.DocumentFile
 import org.qamzor.core.ArchiveEngine
+import org.qamzor.core.InPlaceVault
 import java.io.File
 import java.text.Normalizer
 import java.util.Locale
@@ -40,7 +46,6 @@ import java.util.Locale
 /** Android SAF front-end for the QAMZOR reference archive engine. */
 class MainActivity : Activity() {
     private lateinit var status: TextView
-    private lateinit var sourcesListContainer: LinearLayout
     private lateinit var operationHealth: TextView
     private lateinit var verifiedFiles: TextView
     private lateinit var verifiedBytes: TextView
@@ -55,11 +60,8 @@ class MainActivity : Activity() {
     private val navIcons = ArrayList<QamzorLineIconView>()
     private val navLabels = ArrayList<TextView>()
     private var currentTab = 0
-    private val selectedSources = ArrayList<File>()
     private val backgroundTaskLock = Any()
     @Volatile private var backgroundBusy = false
-    private var stagingDirectory: File? = null
-    private var pendingArchive: File? = null
     private var pendingExtraction: File? = null
     private var pendingExtractionPaths: Set<String>? = null
     private var openedArchive: File? = null
@@ -69,16 +71,19 @@ class MainActivity : Activity() {
     private var explorerPath: String = ""
     private val operationHistory = java.util.Collections.synchronizedList(mutableListOf<String>())
     private val openedFolderPasswords: MutableMap<String, String> = java.util.Collections.synchronizedMap(LinkedHashMap())
-    /** Independent folder passwords chosen on the Create page: archive-relative folder path -> password. */
-    private val folderLocks = LinkedHashMap<String, String>()
-    private val expandedDirs = HashSet<String>()
+    // File browser state (page 0)
+    private lateinit var filesList: LinearLayout
+    private lateinit var filesScroll: ScrollView
+    private lateinit var filesPathText: TextView
+    private lateinit var filesRootsRow: LinearLayout
+    private lateinit var filesPermissionCard: View
+    private lateinit var filesSelectionBar: View
+    private lateinit var filesSelectionLabel: TextView
+    private var currentDir: File = Environment.getExternalStorageDirectory()
+    private val selectedPaths = LinkedHashSet<String>()
+    private var filesLimit = FILES_PAGE_SIZE
     @Volatile private var activeOperationLabel: String? = null
     @Volatile private var activeOperationStartedAt: Long? = null
-    private var protectSwitch: Switch? = null
-    private var protectFields: View? = null
-    private var passwordField: EditText? = null
-    private var confirmField: EditText? = null
-    private var hideNamesBox: CheckBox? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -106,7 +111,11 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
-        if (currentTab == 1 && openedArchive != null && explorerPath.isNotEmpty()) {
+        if (currentTab == 0 && selectedPaths.isNotEmpty()) {
+            clearFileSelection()
+        } else if (currentTab == 0 && goUp()) {
+            // moved to the parent folder
+        } else if (currentTab == 1 && openedArchive != null && explorerPath.isNotEmpty()) {
             showVirtualExplorer(explorerPath.substringBeforeLast('/', ""))
         } else if (currentTab != 0) {
             selectTab(0)
@@ -192,7 +201,7 @@ class MainActivity : Activity() {
         }
 
         val pageHost = FrameLayout(this)
-        pages.add(buildCreatePage())
+        pages.add(buildFilesPage())
         pages.add(buildOpenPage())
         pages.add(buildToolsPage())
         pages.add(buildOperationsPage())
@@ -206,7 +215,7 @@ class MainActivity : Activity() {
             setBackgroundColor(COLOR_BAR)
             setPadding(dp(6), dp(3), dp(6), dp(3))
         }
-        val specs = listOf("create" to "إنشاء", "folder_search" to "فتح", "tools" to "أدوات", "activity" to "العمليات")
+        val specs = listOf("folder" to "الملفات", "folder_search" to "الأرشيف", "tools" to "أدوات", "activity" to "العمليات")
         for ((index, spec) in specs.withIndex()) {
             val icon = QamzorLineIconView(this, spec.first, NAV_IDLE)
             val caption = TextView(this).apply {
@@ -234,7 +243,7 @@ class MainActivity : Activity() {
         setContentView(shell)
         selectTab(0)
         renderEmptyExplorer()
-        refreshSelectionSummary()
+        renderFiles()
         refreshOperationLog()
     }
 
@@ -266,76 +275,92 @@ class MainActivity : Activity() {
         setPadding(dp(14), dp(12), dp(14), dp(18))
     }
 
-    // ───────────────────────────── Page 1: Create ─────────────────────────────
+    // ───────────────────────────── Page 1: Phone files (browse everything, archive/encrypt in place) ─────────────────────────────
 
-    private fun buildCreatePage(): View {
-        val column = pageColumn()
-        val addRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        addRow.addView(actionButton("plus", "إضافة ملفات", false) { pickFiles() },
-            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(5) })
-        addRow.addView(actionButton("folder_add", "إضافة مجلد", false) { pickFolder() },
-            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(5) })
-        column.addView(addRow)
+    private fun buildFilesPage(): View {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setBackgroundColor(COLOR_BG)
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(14), dp(10), dp(14), dp(4))
+        }
 
-        val panel = LinearLayout(this).apply {
+        val permission = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = rounded(0xFF142441.toInt(), 14)
-        }
-        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        head.addView(label("العناصر المحددة", 13f, 0xFFE7EFFD.toInt(), true), LinearLayout.LayoutParams(0, -2, 1f))
-        head.addView(label("مسح الكل", 11.5f, 0xFF9FB4D3.toInt(), false).apply {
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            isClickable = true
-            setOnClickListener { clearSelection() }
-        })
-        panel.addView(head)
-        sourcesListContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, dp(2))
-        }
-        panel.addView(sourcesListContainer)
-        panel.addView(label("اضغط أيقونة القفل بجانب أي مجلد لتعيين كلمة مرور مستقلة له.", 10.5f, 0xFF8FA6C9.toInt(), false)
-            .apply { setPadding(dp(2), dp(4), dp(2), 0) })
-        column.addView(panel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
-
-        val protection = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(10))
-            background = rounded(0xFF142441.toInt(), 14)
-        }
-        val fields = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(12))
+            background = rounded(0xFF3A2D12.toInt(), 14)
             visibility = View.GONE
         }
-        val password = inputField("كلمة مرور الأرشيف (10 أحرف على الأقل)", true)
-        val confirm = inputField("تأكيد كلمة المرور", true)
-        val hideNames = CheckBox(this).apply {
-            text = "إخفاء أسماء الملفات والمجلدات وأحجامها (QZRA 1.3)"
-            textSize = 12f
-            isChecked = true
-            setTextColor(0xFFD8E5F8.toInt())
-            buttonTintList = ColorStateList.valueOf(0xFF8FB4F4.toInt())
-        }
-        fields.addView(password, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
-        fields.addView(confirm, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
-        fields.addView(hideNames, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
-        fields.addView(label("كلمات المرور لا تُحفظ في أي مكان. فقدانها يعني عدم إمكانية استعادة الملفات.", 10.5f, 0xFF8FA6C9.toInt(), false))
-        val toggle = Switch(this).apply {
-            text = "حماية الأرشيف بكلمة مرور"
-            textSize = 14f
-            setTextColor(0xFFF4F7FF.toInt())
-            setPadding(0, dp(4), 0, dp(4))
-            setOnCheckedChangeListener { _, checked -> fields.visibility = if (checked) View.VISIBLE else View.GONE }
-        }
-        protection.addView(toggle, LinearLayout.LayoutParams(-1, -2))
-        protection.addView(fields, LinearLayout.LayoutParams(-1, -2))
-        protectSwitch = toggle; protectFields = fields; passwordField = password; confirmField = confirm; hideNamesBox = hideNames
-        column.addView(protection, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        permission.addView(label("يحتاج QAMZOR صلاحية «الوصول إلى كل الملفات» ليعرض ملفات الهاتف ويؤرشف الأصل نفسه (مثل RAR).", 12f, 0xFFFFE2A8.toInt(), true))
+        permission.addView(actionButton("shield_check", "منح الصلاحية", true) { requestStorageAccess() },
+            LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(8) })
+        filesPermissionCard = permission
+        header.addView(permission, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
 
-        column.addView(actionButton("create", "إنشاء أرشيف QZRA", true) { convertSelectedToQzra() },
-            LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(12) })
-        return pageScroll(column)
+        filesRootsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+        }
+        header.addView(filesRootsRow, LinearLayout.LayoutParams(-1, -2))
+
+        val pathRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        filesPathText = label("", 11f, 0xFF9FB4D3.toInt(), false).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.START
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            gravity = Gravity.START
+        }
+        pathRow.addView(filesPathText, LinearLayout.LayoutParams(0, -2, 1f))
+        pathRow.addView(label("↑ للأعلى", 12f, 0xFFBBD2FF.toInt(), true).apply {
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            isClickable = true
+            setOnClickListener { if (!goUp()) status.text = "أنت في جذر التخزين." }
+        })
+        header.addView(pathRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(10))
+            background = rounded(0xFF1B3358.toInt(), 14)
+            visibility = View.GONE
+        }
+        filesSelectionLabel = label("", 12.5f, 0xFFE7EFFD.toInt(), true)
+        bar.addView(filesSelectionLabel)
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+        }
+        buttons.addView(actionButton("create", "أرشفة", false) { confirmSeal(false) },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
+        buttons.addView(actionButton("lock", "تشفير", true) { confirmSeal(true) },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        buttons.addView(actionButton("close", "إلغاء", false) { clearFileSelection() },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
+        bar.addView(buttons, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        filesSelectionBar = bar
+        header.addView(bar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        page.addView(header, LinearLayout.LayoutParams(-1, -2))
+
+        filesList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(14), dp(6), dp(14), dp(18))
+        }
+        filesScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+            addView(filesList)
+        }
+        page.addView(filesScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        return page
     }
 
     // ───────────────────────────── Page 2: Open / explorer ─────────────────────────────
@@ -461,7 +486,7 @@ class MainActivity : Activity() {
             status.text = "لا يوجد أرشيف مفتوح."
             return
         }
-        try { openedArchive?.delete() } catch (_: Exception) { /* best effort */ }
+        deleteIfCached(openedArchive)
         openedArchive = null
         pendingExtraction = null
         pendingExtractionPaths = null
@@ -500,9 +525,7 @@ class MainActivity : Activity() {
         openedProtected = protectedPaths
         openedFolderPasswords.clear()
         explorerPath = ""
-        if (previous != null && previous != archive) {
-            try { previous.delete() } catch (_: Exception) { /* best effort */ }
-        }
+        if (previous != null && previous != archive) deleteIfCached(previous)
     }
 
     private fun needsArchivePassword(error: Exception): Boolean {
@@ -593,6 +616,435 @@ class MainActivity : Activity() {
         val interrupted = snapshot.count { it.contains("توقفت العملية") }
         logSummary.text = current + "\nالسجل: ${snapshot.size} • ناجحة: $completed • فاشلة: $failed • متوقفة: $interrupted"
         logText.text = if (snapshot.isEmpty()) "لا توجد عمليات مسجلة بعد." else snapshot.asReversed().joinToString("\n\n")
+    }
+
+    // ───────────────────────────── Phone files: browse, select, archive / encrypt in place ─────────────────────────────
+
+    override fun onResume() {
+        super.onResume()
+        // Also covers returning from the "All files access" settings screen.
+        renderFiles()
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        renderFiles()
+    }
+
+    private fun hasStorageAccess(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager()
+        else checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    private fun requestStorageAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+        } else {
+            requestPermissions(
+                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                REQUEST_STORAGE_PERMISSION
+            )
+        }
+    }
+
+    private fun storageRoots(): List<Pair<String, File>> {
+        val result = ArrayList<Pair<String, File>>()
+        result.add("الذاكرة الداخلية" to Environment.getExternalStorageDirectory())
+        try {
+            for (dir in getExternalFilesDirs(null)) {
+                if (dir == null) continue
+                val path = dir.absolutePath
+                val index = path.indexOf("/Android/")
+                if (index > 0) {
+                    val root = File(path.substring(0, index))
+                    if (result.none { it.second.absolutePath == root.absolutePath }) result.add("بطاقة SD" to root)
+                }
+            }
+        } catch (_: Exception) { /* removable storage is optional */ }
+        return result
+    }
+
+    private fun isStorageRoot(file: File): Boolean = storageRoots().any { it.second.absolutePath == file.absolutePath }
+
+    private fun isProtectedLocation(file: File): Boolean {
+        val path = file.absolutePath
+        if (isStorageRoot(file)) return true
+        return storageRoots().any { path == it.second.absolutePath + "/Android" }
+    }
+
+    private fun openDirectory(dir: File) {
+        if (!dir.isDirectory) return
+        currentDir = dir
+        selectedPaths.clear()
+        filesLimit = FILES_PAGE_SIZE
+        renderFiles()
+        filesScroll.scrollTo(0, 0)
+    }
+
+    private fun goUp(): Boolean {
+        val parent = currentDir.absoluteFile.parentFile
+        if (parent == null || isStorageRoot(currentDir)) return false
+        openDirectory(parent)
+        return true
+    }
+
+    private fun listDirectory(dir: File): List<File> {
+        val children = dir.listFiles() ?: return emptyList()
+        return children.filter {
+            val name = it.name
+            !(name.startsWith(".qamzor-") || name.startsWith("qamzor-payload-") ||
+                (name.startsWith(".") && name.endsWith(".tmp") && name.contains(".qzra.")))
+        }.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) }))
+    }
+
+    private fun renderFiles() {
+        if (!::filesList.isInitialized) return
+        val allowed = hasStorageAccess()
+        filesPermissionCard.visibility = if (allowed) View.GONE else View.VISIBLE
+        filesRootsRow.removeAllViews()
+        for ((title, root) in storageRoots()) {
+            val chip = label(title, 12f, 0xFFF4F7FF.toInt(), true).apply {
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                background = rounded(0xFF263D63.toInt(), 10)
+                isClickable = true
+                setOnClickListener { openDirectory(root) }
+            }
+            filesRootsRow.addView(chip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
+        }
+        filesPathText.text = currentDir.absolutePath
+        refreshFileSelectionBar()
+        filesList.removeAllViews()
+        if (!allowed) {
+            filesList.addView(label("امنح الصلاحية ليظهر محتوى الهاتف هنا.", 12f, 0xFF9FB4D3.toInt(), false)
+                .apply { setPadding(dp(4), dp(10), dp(4), dp(10)) })
+            return
+        }
+        val entries = listDirectory(currentDir)
+        if (entries.isEmpty()) {
+            filesList.addView(label("المجلد فارغ أو لا يمكن قراءته.", 12f, 0xFF9FB4D3.toInt(), false)
+                .apply { setPadding(dp(4), dp(10), dp(4), dp(10)) })
+            return
+        }
+        for (entry in entries.take(filesLimit)) {
+            filesList.addView(fileRow(entry), LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(5) })
+        }
+        if (entries.size > filesLimit) {
+            val more = label("عرض المزيد (${entries.size - filesLimit} عنصر متبقٍ)", 12.5f, 0xFFBBD2FF.toInt(), true).apply {
+                gravity = Gravity.CENTER
+                background = rounded(0xFF182845.toInt(), 12)
+                isClickable = true
+                setOnClickListener { filesLimit += FILES_PAGE_SIZE; renderFiles() }
+            }
+            filesList.addView(more, LinearLayout.LayoutParams(-1, dp(44)))
+        }
+    }
+
+    private fun fileRow(file: File): View {
+        val isDirectory = file.isDirectory
+        val isArchive = InPlaceVault.isQzra(file)
+        val selected = selectedPaths.contains(file.absolutePath)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+            setPaddingRelative(dp(10), dp(4), dp(10), dp(4))
+            background = rounded(if (selected) 0xFF2F4F86.toInt() else 0xFF1D3152.toInt(), 12)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onFileTapped(file) }
+            setOnLongClickListener { toggleFileSelection(file); true }
+        }
+        if (isArchive) {
+            val icon = ImageView(this).apply {
+                setImageResource(R.drawable.ic_qamzor)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            }
+            row.addView(icon, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(10) })
+        } else {
+            row.addView(QamzorLineIconView(this, if (isDirectory) "folder" else "file", 0xFFBBD2FF.toInt()),
+                LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(10) })
+        }
+        val subtitle = when {
+            isDirectory -> "مجلد • ${file.list()?.size ?: 0} عنصر"
+            isArchive -> (if (InPlaceVault.isEncrypted(file)) "أرشيف QZRA مشفّر بكلمة مرور" else "أرشيف QZRA") + " • " + formatBytes(file.length())
+            else -> formatBytes(file.length())
+        }
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(label(file.name, 13f, 0xFFF4F7FF.toInt(), true).apply {
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setSingleLine(true)
+        })
+        texts.addView(label(subtitle, 10.5f, 0xFF9FB4D3.toInt(), false).apply { maxLines = 1 })
+        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        if (isArchive && InPlaceVault.isEncrypted(file)) {
+            row.addView(QamzorLineIconView(this, "lock", 0xFFFFD27A.toInt()),
+                LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginStart = dp(6) })
+        }
+        if (selected) row.addView(label("✓", 17f, 0xFF68D391.toInt(), true).apply { setPadding(dp(8), 0, dp(4), 0) })
+        return row
+    }
+
+    private fun onFileTapped(file: File) {
+        when {
+            selectedPaths.isNotEmpty() -> toggleFileSelection(file)
+            file.isDirectory -> openDirectory(file)
+            InPlaceVault.isQzra(file) -> showArchiveActions(file)
+            else -> toggleFileSelection(file)
+        }
+    }
+
+    private fun toggleFileSelection(file: File) {
+        val key = file.absolutePath
+        if (!selectedPaths.remove(key)) selectedPaths.add(key)
+        renderFiles()
+    }
+
+    private fun clearFileSelection() {
+        selectedPaths.clear()
+        renderFiles()
+    }
+
+    private fun refreshFileSelectionBar() {
+        filesSelectionBar.visibility = if (selectedPaths.isEmpty()) View.GONE else View.VISIBLE
+        filesSelectionLabel.text = "المحدد: ${selectedPaths.size} عنصر — الأصل سيُستبدل بملف .qzra"
+    }
+
+    private fun selectedFiles(): List<File> = selectedPaths.map { File(it) }.filter { it.exists() }
+
+    private fun confirmSeal(encrypt: Boolean) {
+        val items = selectedFiles()
+        if (items.isEmpty()) return
+        if (backgroundBusy) {
+            status.text = "هناك عملية قيد التنفيذ. انتظر حتى تنتهي."
+            return
+        }
+        val blocked = items.firstOrNull { isProtectedLocation(it) }
+        if (blocked != null) {
+            status.text = "لا يمكن أرشفة «${blocked.name}»: جذر التخزين أو مجلد النظام Android."
+            return
+        }
+        if (encrypt) {
+            promptSealPassword(items)
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("أرشفة ${items.size} عنصر")
+                .setMessage("سيُنشأ ملف .qzra بجانب كل عنصر ثم يُحذف الأصل بعد التحقق الكامل. لن يقرأه إلا QAMZOR.\n\nتنبيه: بدون كلمة مرور الأرشيف غير مشفّر. استخدم «تشفير» لحماية حقيقية.")
+                .setPositiveButton("أرشفة") { _, _ -> startSeal(items, null) }
+                .setNegativeButton("إلغاء", null)
+                .show()
+        }
+    }
+
+    private fun promptSealPassword(items: List<File>) {
+        val first = dialogField("كلمة المرور ($MIN_PASSWORD_LENGTH أحرف على الأقل)")
+        val second = dialogField("تأكيد كلمة المرور")
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(2))
+            addView(first); addView(second)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("تشفير ${items.size} عنصر")
+            .setMessage("سيُستبدل الأصل بملف .qzra مشفّر (AES-256) لا يُفتح إلا داخل QAMZOR وبهذه الكلمة، وتُخفى أسماء الملفات. فقدان الكلمة يعني فقدان الملفات نهائيًا ولا توجد استعادة.")
+            .setView(panel)
+            .setPositiveButton("تشفير") { _, _ ->
+                val value = first.text.toString()
+                val confirmation = second.text.toString()
+                first.text?.clear(); second.text?.clear()
+                when {
+                    value.length < MIN_PASSWORD_LENGTH -> { status.text = "كلمة المرور قصيرة؛ استخدم $MIN_PASSWORD_LENGTH أحرف على الأقل."; promptSealPassword(items) }
+                    value != confirmation -> { status.text = "كلمتا المرور غير متطابقتين."; promptSealPassword(items) }
+                    else -> startSeal(items, value)
+                }
+            }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    private fun startSeal(items: List<File>, password: String?) {
+        val total = items.size
+        val verb = if (password == null) "الأرشفة" else "التشفير"
+        runOnWorker("$verb: $total عنصر") {
+            var done = 0
+            val failures = ArrayList<String>()
+            val touched = ArrayList<String>()
+            for ((index, item) in items.withIndex()) {
+                runOnUiThread { status.text = "جارٍ $verb (${index + 1}/$total): ${item.name}" }
+                try {
+                    val result = InPlaceVault.seal(item, password)
+                    done++
+                    touched.addAll(result.removedPaths)
+                    touched.add(item.absolutePath)
+                    touched.add(result.archive.absolutePath)
+                } catch (error: Exception) {
+                    failures.add("${item.name}: ${error.message ?: error.javaClass.simpleName}")
+                }
+            }
+            scanMedia(touched)
+            runOnUiThread {
+                selectedPaths.clear()
+                renderFiles()
+                status.text = "اكتمل $verb ✓ $done من $total. الأصل محفوظ الآن داخل ملف .qzra فقط." +
+                    if (failures.isEmpty()) "" else "\nفشل ${failures.size} عنصر (الأصل سليم لم يُمس)."
+                if (failures.isNotEmpty()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("تعذرت معالجة بعض العناصر")
+                        .setMessage(failures.joinToString("\n\n"))
+                        .setPositiveButton("حسنًا", null)
+                        .show()
+                }
+            }
+        }
+    }
+
+    /** Ask Android's media index to forget removed files / see new ones (Gallery, Music). Best effort. */
+    private fun scanMedia(paths: List<String>) {
+        if (paths.isEmpty()) return
+        try {
+            android.media.MediaScannerConnection.scanFile(applicationContext, paths.toTypedArray(), null, null)
+        } catch (_: Exception) { /* best effort */ }
+    }
+
+    private fun pathsUnder(root: File): List<String> =
+        if (root.isFile) listOf(root.absolutePath)
+        else root.walkTopDown().filter { it.isFile }.take(3000).map { it.absolutePath }.toList()
+
+    private fun showArchiveActions(file: File) {
+        AlertDialog.Builder(this)
+            .setTitle(file.name)
+            .setItems(arrayOf("فتح وتصفح داخل QAMZOR", "استعادة الأصل (فك الأرشفة)", "فحص السلامة")) { _, which ->
+                when (which) {
+                    0 -> openArchiveFile(file)
+                    1 -> confirmRestore(file)
+                    else -> verifyArchivePath(file)
+                }
+            }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    private fun verifyArchivePath(file: File) {
+        if (InPlaceVault.isEncrypted(file)) {
+            promptPasswordForVerification(file)
+        } else {
+            resetVerificationMetrics()
+            runOnWorker("فشل فحص الأرشيف") { verifyArchiveFile(file, null) }
+        }
+    }
+
+    private fun confirmRestore(file: File) {
+        val encrypted = InPlaceVault.isEncrypted(file)
+        val field = if (encrypted) dialogField("كلمة مرور الأرشيف") else null
+        val builder = AlertDialog.Builder(this)
+            .setTitle("استعادة ${file.name}")
+            .setMessage("سيُستخرج الأصل بجانب الأرشيف بعد التحقق من كل ملف.")
+        if (field != null) {
+            builder.setView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(20), dp(8), dp(20), dp(2))
+                addView(field)
+            })
+        }
+        builder.setPositiveButton("استعادة وحذف الأرشيف") { _, _ ->
+            val password = field?.text?.toString()
+            field?.text?.clear()
+            startRestore(file, password, true)
+        }
+        builder.setNeutralButton("استعادة مع إبقاء الأرشيف") { _, _ ->
+            val password = field?.text?.toString()
+            field?.text?.clear()
+            startRestore(file, password, false)
+        }
+        builder.setNegativeButton("إلغاء", null)
+        builder.show()
+    }
+
+    private fun startRestore(file: File, password: String?, removeArchive: Boolean) {
+        if (password != null && password.isEmpty()) {
+            status.text = "أدخل كلمة المرور أولًا."
+            return
+        }
+        runOnWorker("فشلت الاستعادة") {
+            val restored = InPlaceVault.restore(file, password, removeArchive)
+            scanMedia(restored.flatMap { pathsUnder(it) })
+            runOnUiThread {
+                renderFiles()
+                status.text = "تمت الاستعادة والتحقق ✓: ${restored.joinToString { it.name }}"
+            }
+        }
+    }
+
+    /** Opens an archive straight from storage (no copy). Asks for the password first when encrypted. */
+    private fun openArchiveFile(file: File) {
+        status.text = "جارٍ فتح ${file.name}..."
+        runOnWorker("تعذر فتح الأرشيف") {
+            try {
+                ArchiveEngine.browse(file)
+                installOpenedArchive(file, file.name, null, emptySet())
+                runOnUiThread {
+                    status.text = "تم فتح الأرشيف. تُقرأ الملفات من داخله دون فكّه بالكامل."
+                    selectTab(1)
+                    showVirtualExplorer("")
+                }
+            } catch (error: IllegalArgumentException) {
+                if (needsArchivePassword(error)) {
+                    runOnUiThread { selectTab(1); promptArchivePassword(file, file.name) }
+                } else throw error
+            }
+        }
+    }
+
+    private fun isCachedFile(file: File): Boolean = try {
+        file.canonicalPath.startsWith(cacheDir.canonicalPath + File.separator)
+    } catch (_: Exception) { true }
+
+    /** Only app-private cache copies may be deleted; never a user's real archive. */
+    private fun deleteIfCached(file: File?) {
+        if (file == null) return
+        try {
+            if (isCachedFile(file)) file.delete()
+        } catch (_: Exception) { /* best effort */ }
+    }
+
+    /**
+     * Extract from an archive that lives in user storage: the result is placed next to the archive
+     * (no folder picker). Whole archive = restore the original; one item = extract it beside the archive.
+     */
+    private fun restoreOpenedInPlace(archive: File, path: String?) {
+        val password = openedArchivePassword
+        val folderPasswords = HashMap<String, String>(openedFolderPasswords)
+        if (path != null) {
+            runOnWorker("فشل استخراج العنصر") {
+                val extracted = InPlaceVault.restoreItem(archive, path, password, folderPasswords)
+                scanMedia(pathsUnder(extracted))
+                runOnUiThread {
+                    renderFiles()
+                    status.text = "تم استخراج «${extracted.name}» بجانب الأرشيف والتحقق منه ✓ (الأرشيف باقٍ كما هو)."
+                }
+            }
+            return
+        }
+        val run = { remove: Boolean ->
+            runOnWorker("فشلت الاستعادة") {
+                val restored = InPlaceVault.restore(archive, password, remove, folderPasswords)
+                scanMedia(restored.flatMap { pathsUnder(it) })
+                runOnUiThread {
+                    if (remove) { closeOpenedArchive(); selectTab(0) }
+                    renderFiles()
+                    status.text = "تمت الاستعادة والتحقق ✓: ${restored.joinToString { it.name }}"
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("استعادة ${archive.name}")
+            .setMessage("سيُستخرج الأصل بجانب الأرشيف بعد التحقق من كل ملف.")
+            .setPositiveButton("استعادة وحذف الأرشيف") { _, _ -> run(true) }
+            .setNeutralButton("استعادة مع إبقاء الأرشيف") { _, _ -> run(false) }
+            .setNegativeButton("إلغاء", null)
+            .show()
     }
 
     // ───────────────────────────── Small view helpers ─────────────────────────────
@@ -829,23 +1281,6 @@ class MainActivity : Activity() {
         verifiedBytes.text = formatBytes(bytes)
     }
 
-    private fun pickFiles() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }
-        startActivityForResult(intent, REQUEST_FILES)
-    }
-
-    private fun pickFolder() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }
-        startActivityForResult(intent, REQUEST_FOLDER)
-    }
-
     private fun pickArchive(request: Int) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -861,9 +1296,6 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK || data == null) return
         try {
             when (requestCode) {
-                REQUEST_FILES -> addSelectedFiles(data)
-                REQUEST_FOLDER -> addSelectedFolder(data)
-                REQUEST_SAVE_ARCHIVE -> savePendingArchive(data.data)
                 REQUEST_BROWSE -> browseSelectedArchive(data.data)
                 REQUEST_VERIFY -> verifySelectedArchive(data.data)
                 REQUEST_COMPARE -> compareSelectedArchives(data)
@@ -1024,327 +1456,6 @@ class MainActivity : Activity() {
             status.text = if (result.valid) {
                 "اكتمل فحص الأرشيف والتحقق من بصمات SHA-256 ✓\nالإصدار: ${result.version}"
             } else "لم يكتمل التحقق من سلامة الأرشيف."
-        }
-    }
-
-    private fun addSelectedFiles(data: Intent) {
-        val uris = ArrayList<Uri>()
-        data.clipData?.let { clip -> for (index in 0 until clip.itemCount) uris.add(clip.getItemAt(index).uri) }
-        if (uris.isEmpty()) data.data?.let(uris::add)
-        require(uris.isNotEmpty()) { "لم يتم اختيار ملفات" }
-        status.text = "جارٍ نسخ الملفات المحددة إلى قائمة الأرشفة..."
-        runOnWorker("تعذرت إضافة الملفات") {
-            val staging = getStagingDirectory()
-            val added = ArrayList<File>()
-            for ((index, uri) in uris.withIndex()) {
-                val name = uniqueName(staging, safeName(displayName(uri) ?: "file-${index + 1}.bin"))
-                added += copyUriTo(uri, File(staging, name))
-            }
-            synchronized(selectedSources) { selectedSources.addAll(added) }
-            runOnUiThread {
-                refreshSelectionSummary()
-                status.text = "تمت إضافة ${added.size} ملف/ملفات. يمكنك إضافة مجلدات أخرى قبل إنشاء الأرشيف."
-            }
-        }
-    }
-
-    private fun addSelectedFolder(data: Intent) {
-        val uri = data.data ?: error("لم يتم اختيار مجلد")
-        takeTreePermission(uri, data)
-        status.text = "جارٍ فتح مصدر المجلد وقراءة جميع محتوياته..."
-        runOnWorker("تعذرت إضافة المجلد") {
-            val documentTree = DocumentFile.fromTreeUri(this, uri) ?: error("لا يمكن فتح المجلد المحدد عبر موفر الملفات")
-            require(documentTree.isDirectory) { "العنصر المحدد ليس مجلدًا" }
-            val staging = getStagingDirectory()
-            val rootName = uniqueName(staging, safeName(documentTree.name ?: "folder"))
-            val localRoot = File(staging, rootName)
-            val visitedDocumentIds = HashSet<String>()
-            val copied = try {
-                copyDocumentDirectory(documentTree, localRoot, visitedDocumentIds, 0)
-            } catch (error: Exception) {
-                localRoot.deleteRecursively()
-                throw error
-            }
-            require(localRoot.isDirectory) { "لم يتم إنشاء جذر المجلد المحلي" }
-            val counts = countFilesAndDirectories(localRoot)
-            require(counts.second >= 1) { "تعذر إنشاء بنية المجلد المحدد" }
-            synchronized(selectedSources) { selectedSources.add(localRoot) }
-            runOnUiThread {
-                refreshSelectionSummary()
-                status.text = if (counts.first == 0) {
-                    "تمت إضافة المجلد الفارغ: $rootName\nسيتم تضمين اسم المجلد وبنيته في أرشيف QZRA."
-                } else {
-                    "تمت إضافة المجلد كاملًا: $rootName\nالملفات: ${counts.first} • المجلدات: ${counts.second}\nالحجم المنسوخ: ${formatBytes(copied.second)}\nأصبح جاهزًا للتحويل إلى QZRA."
-                }
-            }
-        }
-    }
-
-    /**
-     * Copies a SAF tree into the app's private staging area. Some document providers
-     * return null MIME types for ordinary files, making DocumentFile.isFile false.
-     * Treat every non-directory document as a stream candidate and report a useful
-     * error only when the provider cannot actually open it.
-     */
-    private fun copyDocumentDirectory(
-        source: DocumentFile,
-        destination: File,
-        visitedDocumentIds: MutableSet<String>,
-        depth: Int
-    ): Pair<Int, Long> {
-        require(depth <= 128) { "المجلد متداخل بعمق غير مدعوم (الحد 128 مستوى)" }
-        val documentId = try { android.provider.DocumentsContract.getDocumentId(source.uri) }
-            catch (_: Exception) { source.uri.toString() }
-        require(visitedDocumentIds.add(documentId)) { "اكتُشف تكرار أو حلقة داخل شجرة المجلدات: ${source.name}" }
-        require(destination.mkdirs() || destination.isDirectory) { "تعذر إنشاء المجلد المحلي: ${destination.name}" }
-
-        var filesCopied = 0
-        var bytesCopied = 0L
-        val usedNames = HashSet<String>()
-        val children = source.listFiles().sortedBy { (it.name ?: "").lowercase(Locale.ROOT) }
-        for (child in children) {
-            val childName = uniqueName(usedNames, safeName(child.name ?: displayName(child.uri) ?: "item"))
-            val target = File(destination, childName)
-            val isDirectory = child.isDirectory ||
-                contentResolver.getType(child.uri) == android.provider.DocumentsContract.Document.MIME_TYPE_DIR
-            if (isDirectory) {
-                val nested = copyDocumentDirectory(child, target, visitedDocumentIds, depth + 1)
-                filesCopied += nested.first
-                bytesCopied += nested.second
-            } else {
-                val input = try { contentResolver.openInputStream(child.uri) } catch (error: Exception) {
-                    throw IllegalArgumentException("تعذرت قراءة العنصر '$childName' من موفر الملفات: ${error.message ?: error.javaClass.simpleName}", error)
-                } ?: error("موفر الملفات لم يعطِ محتوى قابلًا للقراءة للعنصر: $childName")
-                var copied = 0L
-                input.use { stream ->
-                    target.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val count = stream.read(buffer)
-                            if (count < 0) break
-                            output.write(buffer, 0, count)
-                            copied += count
-                        }
-                    }
-                }
-                filesCopied++
-                bytesCopied += copied
-            }
-        }
-        return filesCopied to bytesCopied
-    }
-
-    // ───────────────────────────── Create flow: source tree, folder locks, archive creation ─────────────────────────────
-
-    private fun convertSelectedToQzra() {
-        if (backgroundBusy) {
-            status.text = "هناك عملية قيد التنفيذ. انتظر حتى تنتهي."
-            return
-        }
-        val sources = synchronized(selectedSources) { selectedSources.toList() }
-        if (sources.isEmpty()) {
-            status.text = "أضف ملفًا أو مجلدًا واحدًا على الأقل قبل إنشاء الأرشيف."
-            return
-        }
-        val root = stagingDirectory
-        val locks = LinkedHashMap<String, String>()
-        if (root != null) for ((path, secret) in folderLocks) if (File(root, path).isDirectory) locks[path] = secret
-        val protect = protectSwitch?.isChecked == true || locks.isNotEmpty()
-        if (!protect) {
-            createSelectedQzra(sources, null)
-            return
-        }
-        val first = passwordField?.text?.toString().orEmpty()
-        val second = confirmField?.text?.toString().orEmpty()
-        if (protectSwitch?.isChecked != true) protectSwitch?.isChecked = true
-        when {
-            first.isEmpty() -> status.text = "أدخل كلمة مرور الأرشيف في بطاقة الحماية (مطلوبة أيضًا عند حماية مجلد)."
-            first.length < 10 -> status.text = "كلمة مرور الأرشيف قصيرة؛ استخدم 10 أحرف على الأقل."
-            first != second -> status.text = "كلمتا مرور الأرشيف غير متطابقتين."
-            else -> createSelectedQzra(sources, first, hideNamesBox?.isChecked != false || locks.isNotEmpty(), locks)
-        }
-    }
-
-    private fun promptFolderLock(path: String) {
-        val existing = folderLocks.containsKey(path)
-        val first = dialogField("كلمة مرور المجلد (10 أحرف على الأقل)")
-        val second = dialogField("تأكيد كلمة المرور")
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), dp(2))
-            addView(first); addView(second)
-        }
-        val builder = AlertDialog.Builder(this)
-            .setTitle("كلمة مرور المجلد: ${path.substringAfterLast('/')}")
-            .setMessage("كلمة مرور مستقلة لهذا المجلد فقط. لا يمكن قراءة ملفاته أو فحصها أو استخراجها بدونها، حتى مع كلمة مرور الأرشيف.")
-            .setView(panel)
-            .setPositiveButton("حماية المجلد") { _, _ ->
-                val value = first.text.toString()
-                val confirmation = second.text.toString()
-                first.text?.clear(); second.text?.clear()
-                when {
-                    value.length < 10 -> { status.text = "كلمة مرور المجلد قصيرة؛ استخدم 10 أحرف على الأقل."; promptFolderLock(path) }
-                    value != confirmation -> { status.text = "كلمتا مرور المجلد غير متطابقتين."; promptFolderLock(path) }
-                    !existing && folderLocks.size >= 32 -> { status.text = "الحد الأقصى 32 مجلدًا محميًا بكلمة مرور مستقلة في الأرشيف الواحد." }
-                    else -> {
-                        folderLocks[path] = value
-                        if (protectSwitch?.isChecked != true) protectSwitch?.isChecked = true
-                        status.text = "تم تعيين كلمة مرور مستقلة للمجلد: $path\nأدخل كلمة مرور الأرشيف ثم اضغط «إنشاء أرشيف QZRA»."
-                        refreshSelectionSummary()
-                    }
-                }
-            }
-            .setNegativeButton("إلغاء", null)
-        if (existing) {
-            builder.setNeutralButton("إزالة الحماية") { _, _ ->
-                folderLocks.remove(path)
-                status.text = "تمت إزالة حماية المجلد: $path"
-                refreshSelectionSummary()
-            }
-        }
-        builder.show()
-    }
-
-    private fun createSelectedQzra(
-        sources: List<File>, password: String?, encryptMetadata: Boolean = false,
-        folderPasswords: Map<String, String> = emptyMap()
-    ) {
-        status.text = "جارٍ إنشاء أرشيف QZRA${if (password == null) "" else " مشفّر"}..."
-        resetVerificationMetrics()
-        runOnWorker("فشل إنشاء أرشيف QZRA") {
-            val output = File(cacheDir, "QAMZOR-${System.currentTimeMillis()}.qzra")
-            val result = ArchiveEngine.convertToQzra(
-                output, sources, password = password, encryptMetadata = encryptMetadata,
-                folderPasswords = folderPasswords
-            )
-            val verified = ArchiveEngine.verify(output, password, folderPasswords)
-            require(verified.valid && verified.filesChecked == result.files) { "تعذر التحقق من الأرشيف بعد الإنشاء" }
-            val archiveEntries = ArchiveEngine.list(output, password, folderPasswords)
-            require(archiveEntries.size == result.entries) { "عدد عناصر الأرشيف الناتج لا يطابق المصادر" }
-            pendingArchive = output
-            runOnUiThread {
-                refreshVerificationMetrics(verified.valid, verified.filesChecked, verified.bytesChecked)
-                val protectedCount = folderPasswords.size
-                status.text = "اكتمل الإنشاء والتحقق ✓ (${verified.version}) • الملفات: ${result.files} • " +
-                    "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
-                    (if (protectedCount > 0) " • مجلدات محمية: $protectedCount" else "") + "\nاختر مكان حفظ ملف .qzra."
-                val save = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE); type = "application/octet-stream"
-                    putExtra(Intent.EXTRA_TITLE, output.name)
-                }
-                startActivityForResult(save, REQUEST_SAVE_ARCHIVE)
-            }
-        }
-    }
-
-    private fun resetProtectionUi() {
-        folderLocks.clear()
-        expandedDirs.clear()
-        passwordField?.text?.clear()
-        confirmField?.text?.clear()
-        protectSwitch?.isChecked = false
-        hideNamesBox?.isChecked = true
-    }
-
-    private fun clearSelection() {
-        if (backgroundBusy) {
-            status.text = "هناك عملية ملفات قيد التنفيذ. امسح القائمة بعد انتهائها."
-            return
-        }
-        synchronized(selectedSources) { selectedSources.clear() }
-        stagingDirectory?.deleteRecursively()
-        stagingDirectory = null
-        folderLocks.clear()
-        expandedDirs.clear()
-        refreshSelectionSummary()
-        status.text = "تم مسح قائمة الملفات والمجلدات."
-    }
-
-    private fun removeSource(source: File, relative: String) {
-        if (backgroundBusy) {
-            status.text = "هناك عملية ملفات قيد التنفيذ. حاول بعد انتهائها."
-            return
-        }
-        synchronized(selectedSources) { selectedSources.remove(source) }
-        source.deleteRecursively()
-        for (key in folderLocks.keys.toList()) if (key == relative || key.startsWith("$relative/")) folderLocks.remove(key)
-        for (key in expandedDirs.toList()) if (key == relative || key.startsWith("$relative/")) expandedDirs.remove(key)
-        refreshSelectionSummary()
-        status.text = "تمت إزالة ${source.name} من قائمة الأرشفة."
-    }
-
-    private fun refreshSelectionSummary() {
-        val sources = synchronized(selectedSources) { selectedSources.toList() }
-        val root = stagingDirectory
-        runOnUiThread {
-            sourcesListContainer.removeAllViews()
-            if (sources.isEmpty() || root == null) {
-                sourcesListContainer.addView(label("لم تتم إضافة ملفات أو مجلدات بعد.", 12f, 0xFF9FB4D3.toInt(), false)
-                    .apply { setPadding(dp(4), dp(8), dp(4), dp(8)) })
-            } else {
-                for (source in sources) addSourceRows(source, root, 0)
-            }
-        }
-    }
-
-    private fun addSourceRows(file: File, root: File, depth: Int) {
-        val relative = file.relativeTo(root).invariantSeparatorsPath
-        val isDirectory = file.isDirectory
-        val locked = isDirectory && folderLocks.containsKey(relative)
-        val expanded = isDirectory && expandedDirs.contains(relative)
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            gravity = Gravity.CENTER_VERTICAL
-            setPaddingRelative(dp(8) + depth * dp(14), dp(3), dp(8), dp(3))
-            background = rounded(if (depth == 0) 0xFF1D3152.toInt() else 0xFF182845.toInt(), 10)
-            if (isDirectory) {
-                isClickable = true
-                isFocusable = true
-                setOnClickListener {
-                    if (expanded) expandedDirs.remove(relative) else expandedDirs.add(relative)
-                    refreshSelectionSummary()
-                }
-            }
-        }
-        row.addView(QamzorLineIconView(this, if (isDirectory) "folder" else "file", 0xFFBBD2FF.toInt()),
-            LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(8) })
-        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        texts.addView(label(file.name, 12.5f, 0xFFF4F7FF.toInt(), true).apply {
-            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setSingleLine(true)
-        })
-        texts.addView(label(
-            when {
-                locked -> "محمي بكلمة مرور مستقلة"
-                isDirectory -> "مجلد • ${file.list()?.size ?: 0} عناصر مباشرة"
-                else -> "ملف • ${formatBytes(file.length())}"
-            }, 10f, if (locked) 0xFFFFD27A.toInt() else 0xFF9FB4D3.toInt(), false).apply { maxLines = 1 })
-        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-        if (isDirectory) {
-            val lockButton = iconBadge(if (locked) "lock" else "unlock", if (locked) 0x44FFD27A else 0x334B73AA,
-                if (locked) 0xFFFFD27A.toInt() else 0xFFBBD2FF.toInt(), 32).apply {
-                isClickable = true
-                isFocusable = true
-                contentDescription = "كلمة مرور مستقلة للمجلد ${file.name}"
-                setOnClickListener { promptFolderLock(relative) }
-            }
-            row.addView(lockButton, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(4) })
-        }
-        if (depth == 0) {
-            val remove = iconBadge("trash", 0x334E2937, 0xFFFFB6B6.toInt(), 32).apply {
-                isClickable = true
-                isFocusable = true
-                contentDescription = "حذف ${file.name} من القائمة"
-                setOnClickListener { removeSource(file, relative) }
-            }
-            row.addView(remove, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(4) })
-        }
-        sourcesListContainer.addView(row, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(5) })
-        if (expanded) {
-            val children = file.listFiles()
-                ?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) }))
-                ?.take(300).orEmpty()
-            for (child in children) addSourceRows(child, root, depth + 1)
         }
     }
 
@@ -1555,6 +1666,11 @@ class MainActivity : Activity() {
     }
 
     private fun requestSelectedExtraction(path: String?) {
+        val opened = openedArchive
+        if (opened != null && !isCachedFile(opened) && hasStorageAccess()) {
+            restoreOpenedInPlace(opened, path)
+            return
+        }
         val archive = openedArchive ?: pendingExtraction ?: return
         pendingExtraction = archive
         pendingExtractionPaths = path?.let { setOf(it) }
@@ -1571,26 +1687,6 @@ class MainActivity : Activity() {
         bytes < 1024 -> "$bytes B"
         bytes < 1024L * 1024 -> "${"%.1f".format(Locale.ROOT, bytes / 1024.0)} KB"
         else -> "${"%.2f".format(Locale.ROOT, bytes / (1024.0 * 1024.0))} MB"
-    }
-
-    private fun savePendingArchive(uri: Uri?) {
-        val archive = pendingArchive ?: error("لا يوجد أرشيف بانتظار الحفظ")
-        val destination = uri ?: error("لم يتم اختيار مكان الحفظ")
-        status.text = "جارٍ حفظ الأرشيف..."
-        runOnWorker("فشل حفظ الأرشيف") {
-            val output = contentResolver.openOutputStream(destination, "w") ?: error("لا يمكن فتح مكان الحفظ")
-            output.use { stream -> archive.inputStream().use { it.copyTo(stream) } }
-            runOnUiThread {
-                status.text = "تم حفظ الأرشيف بنجاح: ${archive.name}\nيمكنك الآن فحصه أو مشاركته."
-                pendingArchive = null
-                try { archive.delete() } catch (_: Exception) { /* best effort */ }
-                synchronized(selectedSources) { selectedSources.clear() }
-                stagingDirectory?.deleteRecursively()
-                stagingDirectory = null
-                resetProtectionUi()
-                refreshSelectionSummary()
-            }
-        }
     }
 
     private fun extractToTree(treeUri: Uri?) {
@@ -1692,19 +1788,6 @@ class MainActivity : Activity() {
         try { contentResolver.takePersistableUriPermission(uri, flags) } catch (_: SecurityException) { /* Some providers grant transient access only. */ }
     }
 
-    private fun getStagingDirectory(): File {
-        val current = stagingDirectory
-        if (current != null && current.isDirectory) return current
-        return File(cacheDir, "qamzor-selected-sources").apply { deleteRecursively(); mkdirs() }.also { stagingDirectory = it }
-    }
-
-    private fun countFilesAndDirectories(root: File): Pair<Int, Int> {
-        var files = 0
-        var directories = 0
-        root.walkTopDown().forEach { if (it.isDirectory) directories++ else if (it.isFile) files++ }
-        return files to directories
-    }
-
     private fun runOnWorker(errorPrefix: String, block: () -> Unit) {
         Thread {
             synchronized(backgroundTaskLock) {
@@ -1786,11 +1869,11 @@ class MainActivity : Activity() {
         private val COLOR_BG = 0xFF0B1730.toInt()
         private val COLOR_BAR = 0xFF101D36.toInt()
         private val NAV_IDLE = 0xFF8FA4C8.toInt()
-        private val TAB_TITLES = listOf("إنشاء أرشيف جديد", "فتح وتصفح أرشيف", "الأدوات", "سجل العمليات")
+        private val TAB_TITLES = listOf("ملفات الهاتف", "الأرشيف المفتوح", "الأدوات", "سجل العمليات")
         private val TEXT_EXTENSIONS = setOf("txt", "md", "csv", "tsv", "json", "xml", "html", "htm", "css", "js", "ts", "py", "kt", "java", "yaml", "yml", "toml", "ini", "properties", "sh", "sql", "log")
-        private const val REQUEST_FILES = 20
-        private const val REQUEST_FOLDER = 21
-        private const val REQUEST_SAVE_ARCHIVE = 22
+        private const val FILES_PAGE_SIZE = 400
+        private const val MIN_PASSWORD_LENGTH = 10
+        private const val REQUEST_STORAGE_PERMISSION = 30
         private const val REQUEST_BROWSE = 23
         private const val REQUEST_EXTRACT = 24
         private const val REQUEST_OUTPUT_TREE = 25

@@ -1,5 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Browse the whole phone and archive items in place (like RAR). Sideloaded builds only; Google Play restricts this permission. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <application
+        android:requestLegacyExternalStorage="true"
         android:allowBackup="false"
         android:icon="@drawable/ic_qamzor"
         android:label="QAMZOR"
@@ -17,8 +22,12 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.qzra" />
-                <data android:scheme="file" android:mimeType="*/*" android:pathPattern=".*\\.qzra" />
+                <data android:scheme="content" android:host="*" android:mimeType="*/*" />
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.qzra" />
+                <data android:pathPattern=".*\\..*\\.qzra" />
+                <data android:pathPattern=".*\\..*\\..*\\.qzra" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.qzra" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

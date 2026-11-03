@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0-dev — In-place archive/encrypt and phone file browser (2026-11-04)
+
+- Android: the first tab is now a file browser for the whole phone (internal storage and SD card) like RAR. Long-press to select; tap a file to select it; tap a folder to enter it.
+- Android: **Archive** and **Encrypt** act on the original item. A `.qzra` file is created next to it, fully verified (every chunk and SHA-256), checked against a before/after snapshot of the source, and only then is the original deleted. If anything fails the original is left untouched and the partial archive is removed.
+- Android: **Encrypt** asks for one password (min. 10 characters, confirmed) and writes QZRA 1.3: AES-256-GCM, scrypt, file names/sizes/structure hidden. Opening it from the app or from any file manager asks for that password first.
+- Android: `.qzra` rows show the QAMZOR icon (and a lock when password-protected). Tapping one offers open/browse, restore original, and integrity check. Restore extracts into a hidden work folder, verifies, then moves into place.
+- Android: removed the copy-to-private-staging flow (the "copies contents into an internal staging area and does not change the original folder" behaviour) and the separate master/folder password prompts on creation. Opening an archive that lives in user storage no longer copies it, and closing it never deletes the real file.
+- Android: needs "All files access" (MANAGE_EXTERNAL_STORAGE) on Android 11+, runtime storage permission on Android 8–10. Sideloaded builds only.
+- Android: «استخراج» inside an opened archive that lives in storage no longer opens a folder picker: the whole archive is restored next to itself (with the option to delete the archive), and a single item is extracted beside the archive.
+- Core: new `InPlaceVault` (`seal`, `restore`, `restoreItem`, `isEncrypted`) with JUnit tests in `InPlaceVaultTest`.
+- Not built or run in this workspace: Kotlin/Gradle compile, JUnit and APK must be verified by GitHub Actions.
+
 ## 0.8.0-dev — Android UI rework and folder-password UX (2026-11-04)
 
 - Android: new layout with a compact bottom navigation bar (Create / Open / Tools / Operations), smaller icons and one persistent status line; the old dashboard grid and dialog-based explorer are gone.
