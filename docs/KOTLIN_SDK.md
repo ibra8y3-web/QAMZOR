@@ -10,4 +10,7 @@ val entries = qamzor.listEntries(created.archive)
 val extracted = qamzor.extractArchive(created.archive, File("restore"))
 ```
 
-The SDK is version `0.1.0-dev`; it is not a stable API/ABI promise. It currently does not expose encryption, detached signatures, recovery sidecars, delta repositories, remote object storage, enterprise identity integration or server-side fleet administration. Those capabilities must be implemented and tested before they can be advertised as part of the SDK.
+The SDK is version `0.2.0-dev`; it is not a stable API/ABI promise. It currently does not expose encryption, detached signatures, recovery sidecars, delta repositories, remote object storage, enterprise identity integration or server-side fleet administration. Those capabilities must be implemented and tested before they can be advertised as part of the SDK.
+
+
+The SDK exposes `convertToQzra(destination, inputs)` for losslessly packaging ordinary files and folders in the native `.qzra` container. It preserves source bytes and paths; it is not a document/image/audio/video transcoder.

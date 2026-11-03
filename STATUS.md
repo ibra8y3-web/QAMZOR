@@ -71,14 +71,22 @@ This file is the source of truth for implementation progress. A feature is marke
 
 ## Phase 5 — Android application
 
-**Status: INITIAL SOURCE IMPLEMENTATION ADDED; BUILD AND DEVICE VALIDATION PENDING.**
+**Status: VIRTUAL ARCHIVE EXPLORER SOURCE IMPLEMENTED; GRADLE BUILD AND DEVICE VALIDATION PENDING.**
 
 - [x] Native Android Gradle project and launcher activity.
-- [x] Storage Access Framework selection for source files, archive input, output archive and extraction destination.
-- [x] Real Kotlin-core operations wired to the app: create QZRA 1.1, inspect/list, verify and extract.
-- [x] Android CI workflow configured to assemble a debug APK and run unit-test tasks.
-- [ ] Remote Gradle/Android build has not yet run; no APK is currently certified.
-- [ ] Emulator/device tests, large-file memory profiling, accessibility, lifecycle and encrypted QZRA 1.2 support remain open.
+- [x] Storage Access Framework selection for multiple source files, complete source folder trees, archive input, output archive and extraction destination.
+- [x] Recursive folder import preserves nested directories and empty directories, with normalized/sanitized names and collision handling.
+- [x] Multiple files and folders can be queued together before archive creation.
+- [x] Interactive Virtual Archive Explorer: list immediate children, enter nested folders and navigate to parent directories without unpacking archive entries.
+- [x] Core bounded preview API reads blocks directly from the QZRA payload, retains only preview bytes and verifies chunk and complete-file SHA-256 digests.
+- [x] Android text, raster image and first-page PDF preview with explicit byte limits; unsupported types can be selectively extracted.
+- [x] Selective single-file extraction, selected directory-subtree extraction and full archive extraction with relative paths and empty directories preserved.
+- [x] Kotlin reader support for QZRA 1.0, 1.1 and password-authenticated AES-256-GCM QZRA 1.2.
+- [x] Python-generated encrypted QZRA 1.2 interoperability fixture and JUnit regression tests for browsing, preview, selective extraction and wrong-password rejection.
+- [x] Android development version advanced to 0.4.0-dev (versionCode 4) for the Virtual Archive Explorer source update.
+- [ ] Updated Android source and Kotlin JUnit tests have not yet been built/run with Gradle in this workspace; no new APK is certified yet.
+- [ ] Remote Gradle/Android build, emulator/device tests, large-archive, SAF-provider, low-storage, accessibility and lifecycle testing remain open.
+- [ ] DOCX/XLSX/ODT rendering, audio/video preview and password-protected archive creation in Android UI remain open; unsupported types can be selectively extracted.
 
 ## Phase 6 — Desktop applications
 
@@ -103,7 +111,7 @@ This file is the source of truth for implementation progress. A feature is marke
 ## Evidence from the 2026-11-03 local execution
 
 - `python -m pip install --no-build-isolation -e ".[crypto]"` — editable installation of the local `qamzor` package passed in the available Python 3.13 environment.
-- `env -u PYTHONPATH python -m unittest discover -s tests -v` — **58 Python tests passed** after installation, demonstrating that the suite no longer relies on a manually set `PYTHONPATH`; includes format, chunking, scheduling, encryption, signature, recovery, repository and mutation-smoke tests. Kotlin JUnit tests are authored separately and have not yet run via Gradle.
+- `env -u PYTHONPATH python -m unittest discover -s tests -v` — **58 Python tests passed** after installation, demonstrating that the suite no longer relies on a manually set `PYTHONPATH`; includes format, chunking, scheduling, encryption, signature, recovery, repository and mutation-smoke tests. This count does not include Kotlin JUnit tests. Kotlin JUnit tests are authored separately and have not yet run via Gradle.
 - `qz --help` — installed console entry point passed.
 - `PYTHONPATH=src python tools/fuzz_qzra.py --iterations 2000 --output benchmark-results/fuzz-smoke-2026-11-03.json` — **2,000 deterministic mutations; 1,999 rejected; 1 still verified; 0 unexpected exceptions**. This is not coverage-guided fuzzing.
 - `python -m compileall -q src tests tools` — passed.
@@ -131,3 +139,52 @@ Do not mark a phase complete from a roadmap entry, placeholder, mock, or unexecu
 - [x] Updated checkout/setup-python/setup-java/setup-android/setup-gradle/upload-artifact actions to Node 24-compatible major versions to address the deprecation warnings in the diagnostic log.
 - [x] Local editable install, full test discovery without `PYTHONPATH`, CLI entry point and Python compile checks pass.
 - [ ] GitHub-hosted Python matrix and Android Gradle workflow have not been rerun from this environment; remote success is not yet confirmed.
+
+
+## Android folder workflow update — 2026-11-03
+
+**Status: SOURCE PATCHED; NEW APK BUILD AND DEVICE VALIDATION PENDING.**
+
+- Replaced the one-shot source picker flow with a source queue: users can add multiple files and add whole folders in separate selections before creating one archive.
+- Folder import recursively copies documents through `DocumentFile`, preserving subfolder layout and empty directories.
+- Added unique name handling for case-insensitive collisions and normalized/sanitized SAF names before handing them to the QZRA engine.
+- Added an archive browser that verifies the archive and shows every manifest entry, including directory entries.
+- Full extraction copies all files and explicitly creates empty directories in the selected destination tree.
+- Added a Kotlin core test for a nested folder tree containing files and empty directories.
+- Updated Android version to `0.2.0-dev` / versionCode `2`.
+- Local Python regression suite remains 58/58 passing. The Android Activity was syntax-parsed by the installed Kotlin compiler, but framework type checking, Gradle compilation, APK generation and device execution remain pending because this environment has no Android SDK or Gradle installation.
+
+
+## Virtual Archive Explorer — 2026-11-03
+
+**Status: IMPLEMENTED IN ANDROID/KOTLIN SOURCE; GRADLE BUILD AND DEVICE ACCEPTANCE PENDING.**
+
+- [x] Read QZRA 1.0, 1.1 and password-authenticated encrypted 1.2 manifests.
+- [x] Browse immediate folder children, enter subfolders and return to parent without expanding archive entries.
+- [x] Preview text, raster images and first-page PDF directly from archive blocks with bounded retained bytes; successful preview verifies every chunk and the entire file SHA-256.
+- [x] Selectively extract a file, a directory subtree or the complete archive while retaining relative paths and empty directories.
+- [x] Password prompt for encrypted archives; fixed detection of the core's actual password-required error message.
+- [x] Avoid stacking multiple explorer dialogs during folder navigation.
+- [x] Added Python-generated encrypted QZRA 1.2 interop fixture and 10 Kotlin JUnit core tests.
+- [x] Android source version advanced to 0.4.0-dev / versionCode 4.
+- [ ] Gradle/JUnit build and debug APK generation still need a successful GitHub Actions run.
+- [ ] Physical-device validation remains required for SAF providers, cache capacity, large files, PDF/image memory, app lifecycle and accessibility.
+- [ ] DOCX/XLSX/ODT rendering, audio/video preview, encrypted archive creation, signatures, recovery sidecars and repository workflows are not exposed by the Android UI.
+
+Preview limits: 2 MiB retained for text, 16 MiB for image/PDF. Reading a file for preview still decodes and verifies the complete selected file; it does not extract archive entries to the user's chosen folder. The archive container is staged in private app cache for random access.
+
+
+## 2026-11-03 update — Native QZRA conversion
+
+Implemented an explicit lossless conversion workflow across the Kotlin core, Android UI, Desktop UI, Kotlin SDK and Python CLI (`qz convert`). The operation packages one or more files/directories into a `.qzra` container, retaining source bytes, names and directory paths. It does not transcode the internal contents of images, documents, audio or video. Android performs a post-write verification before opening the save dialog. New automated regression tests cover mixed file/folder inputs, nested/empty directories, source preservation and invalid output extensions. Android APK generation and Gradle/JUnit execution still require the GitHub Actions environment; they are not claimed as completed in this workspace.
+
+
+## Latest update — 2026-11-03: explicit native QZRA conversion
+
+- Android version: **0.5.0-dev** (versionCode 5).
+- Kotlin SDK version: **0.2.0-dev**.
+- Added the explicit shared engine API `ArchiveEngine.convertToQzra`, the Android conversion workflow, a Desktop conversion workflow, SDK facade support, and the CLI alias `qz convert`.
+- The output is a single `.qzra` container. Original source bytes, filenames and directory paths are preserved; input items are not modified/deleted. This is packaging, not internal document/image/audio/video transcoding.
+- Android performs a post-write `ArchiveEngine.verify` and checks the verified file count before presenting the save dialog.
+- Python regression suite after this update: **60/60 passed**; editable package installation and `qz convert` → `qz verify` → `qz extract` smoke test passed with byte-for-byte comparisons.
+- Kotlin core/SDK tests for conversion are included in the source tree but remain unexecuted here because Gradle/dependency caches and Android SDK are unavailable. A fresh APK has not been built in this workspace; GitHub Actions must run before APK/device validation.

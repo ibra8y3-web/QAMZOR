@@ -49,3 +49,48 @@
 - Changed Android SDK setup to accept licenses explicitly and install pinned SDK packages after setup, avoiding the previous setup-action license failure.
 - Updated checkout, setup-python, setup-java, setup-android, setup-gradle and upload-artifact to Node 24-compatible action majors.
 - Verified editable installation, 58 Python tests without `PYTHONPATH`, the installed CLI and Python compilation locally; remote GitHub Actions must still be rerun.
+
+
+## Unreleased — Android complete-folder workflow
+
+- Reworked Android source selection into a queue supporting multiple files and multiple complete folder trees in one archive.
+- Added recursive Storage Access Framework folder import with nested and empty directory preservation.
+- Added archive browsing that displays both files and directories after integrity verification.
+- Strengthened destination directory creation during full extraction and added collision checks.
+- Added a Kotlin core regression test for nested folders and empty directories.
+- Bumped Android development version to `0.2.0-dev` (versionCode 2).
+- The updated APK is pending a successful Gradle build on GitHub and device validation.
+
+
+## Unreleased — Virtual Archive Explorer and selective in-archive access
+
+- Added Kotlin core immediate-child virtual directory listing, including synthesized directories for archives with implicit parents.
+- Added block-by-block file preview that retains only a bounded prefix while verifying all chunk digests and the whole-file SHA-256.
+- Added selected file/directory-subtree extraction with file-count/byte quotas, path validation, symlink checks and temporary-file publication; full extraction now uses the same selective engine.
+- Added authenticated QZRA 1.2 reading to the Kotlin core using the format-defined scrypt parameters, AES-256-GCM manifest authentication and per-chunk AAD/nonce handling.
+- Added Python-generated encrypted QZRA 1.2 cross-language fixture and regression tests for nested navigation, preview, selective extraction and wrong-password rejection.
+- Replaced the Android flat manifest list with an interactive Virtual Archive Explorer; added text, raster-image and first-page PDF preview, file/folder extraction actions and password prompt for encrypted archives.
+- Android writer remains unencrypted QZRA 1.1; DOCX/XLSX/ODT rendering and audio/video preview remain unsupported.
+- Bumped Android development version to 0.3.0-dev (versionCode 3).
+- Gradle/JUnit and device validation are pending because Gradle/Android SDK are not available in this workspace.
+
+
+## Unreleased — Android Virtual Archive Explorer
+
+- Added interactive in-archive folder navigation and breadcrumbs without extracting archive entries.
+- Added bounded, integrity-verified in-archive previews for text, raster images and the first PDF page.
+- Added extraction of one file, a selected directory subtree or the entire archive.
+- Added Kotlin reader support for encrypted QZRA 1.2 using scrypt and AES-256-GCM, including manifest authentication and password prompts.
+- Added a Python-generated encrypted QZRA 1.2 fixture and Kotlin regression tests for navigation, preview, selected extraction and incorrect passwords.
+- Fixed encrypted-archive detection in Android's browse/extract flows and prevented explorer dialog stacking while navigating.
+- Bumped Android development version to 0.4.0-dev (versionCode 4).
+- Gradle tests, APK generation and physical-device acceptance remain pending a GitHub Actions run.
+
+
+## 2026-11-03 — Native QZRA conversion
+
+- Added an explicit `convertToQzra` operation to the shared Kotlin engine and SDK.
+- Added `qz convert` as an explicit CLI alias, with enforcement of the `.qzra` destination extension.
+- Updated Android and Desktop clients to label the workflow as conversion to the native QZRA container; the Android flow verifies the resulting archive before offering it for saving.
+- Added regression tests for mixed files/folders, nested and empty directories, source preservation, archive verification and CLI extension validation.
+- Clarified that QZRA conversion is lossless packaging, not a generic document/image/audio/video codec conversion.

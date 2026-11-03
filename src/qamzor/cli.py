@@ -16,7 +16,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qz", description="QAMZOR command-line tools for QZRA archives")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    create = sub.add_parser("create", help="create a QZRA archive")
+    create = sub.add_parser("create", aliases=["convert"], help="convert files/folders into a native QZRA archive")
     create.add_argument("archive", help="output .qzra file")
     create.add_argument("sources", nargs="+", help="source files or directories")
     create.add_argument("--profile", choices=("speed", "balanced", "maximum"), default="balanced", help="compression profile")
@@ -204,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
-        if args.command == "create":
+        if args.command in {"create", "convert"}:
+            if args.command == "convert" and Path(args.archive).suffix.lower() != ".qzra":
+                raise QamzorError("Native QAMZOR conversion output must use the .qzra extension")
             password = None
             if args.encrypt:
                 password = getpass.getpass("New QAMZOR archive password: ")

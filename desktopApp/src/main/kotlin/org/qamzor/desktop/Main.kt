@@ -13,8 +13,8 @@ fun main() {
         frame.defaultCloseOperation = JFrame.EXIT_ON_CLOSE
         frame.minimumSize = Dimension(620, 440)
         val title = JLabel("QAMZOR", SwingConstants.CENTER).apply { font = font.deriveFont(28f) }
-        val subtitle = JLabel("Create, inspect, verify and extract QZRA archives", SwingConstants.CENTER)
-        val log = JTextArea("QAMZOR Desktop 0.1.0-dev\nKotlin client: QZRA 1.0 reader / QZRA 1.1 writer\nEncrypted QZRA 1.2 is not yet supported by this client.\n")
+        val subtitle = JLabel("Convert files and folders to QZRA, browse, verify and extract", SwingConstants.CENTER)
+        val log = JTextArea("QAMZOR Desktop 0.1.0-dev\nConvert files/folders losslessly into the native .qzra container.\nThe original source files remain unchanged.\n")
             .apply { isEditable = false; lineWrap = true; wrapStyleWord = true; border = BorderFactory.createEmptyBorder(12, 12, 12, 12) }
         val buttons = JPanel(java.awt.GridLayout(2, 2, 12, 12)).apply { border = BorderFactory.createEmptyBorder(16, 24, 16, 24) }
 
@@ -23,7 +23,7 @@ fun main() {
             catch (error: Exception) { log.append("\nOperation failed: ${error.message}\n") }
         }
 
-        buttons.add(JButton("Create archive").apply {
+        buttons.add(JButton("Convert files/folders to QZRA").apply {
             addActionListener {
                 runTask {
                     val chooser = JFileChooser().apply { isMultiSelectionEnabled = true; fileSelectionMode = JFileChooser.FILES_AND_DIRECTORIES }
@@ -31,8 +31,11 @@ fun main() {
                     val sources = chooser.selectedFiles.toList().ifEmpty { listOf(chooser.selectedFile) }
                     val save = JFileChooser().apply { selectedFile = File("archive.qzra") }
                     check(save.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) { "No destination selected" }
-                    val result = ArchiveEngine.create(save.selectedFile, sources, overwrite = true)
-                    "Created ${result.archive.name}: ${result.entries} entries, ${result.files} files, ${result.originalBytes} source bytes."
+                    val destination = if (save.selectedFile.extension.equals("qzra", true)) save.selectedFile else File(save.selectedFile.parentFile, save.selectedFile.name + ".qzra")
+                    val result = ArchiveEngine.convertToQzra(destination, sources, overwrite = true)
+                    val verified = ArchiveEngine.verify(result.archive)
+                    check(verified.valid && verified.filesChecked == result.files) { "Post-conversion verification failed" }
+                    "Converted and verified ${result.archive.name}: ${result.entries} entries, ${result.files} files, ${result.originalBytes} source bytes. Source files were left unchanged."
                 }
             }
         })

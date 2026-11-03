@@ -18,7 +18,7 @@
 - Local snapshot repository with immutable manifests, a SHA-256 object store, incremental snapshot reuse, verification, restore, retention planning and garbage collection.
 - Virtual archive search and verified bounded previews without extracting files.
 - Explicit extraction byte-count and file-count quotas.
-- Create, list, inspect, verify and extract CLI commands, including full and selected extraction.
+- Create/list/inspect/verify/extract CLI commands, including full and selected extraction; explicit `qz convert` packages files/folders into the native `.qzra` container without changing source files.
 - Additional CLI commands: `search`, `preview`, `keygen`, `sign`, `verify-signature`, `recover create/repair`, and `repo init/snapshot/list/verify/restore/prune/export-delta/apply-delta`.
 - Rejects symbolic-link sources, unsafe archive paths, case-insensitive path collisions, partial/invalid payload overlaps, malformed manifests, and unsafe extraction targets.
 - Uses temporary files and atomic publication for archive creation and extracted files.
@@ -43,8 +43,10 @@ Or run directly from the source tree with `PYTHONPATH=src`.
 ## Commands
 
 ```bash
-# Create an archive using the balanced profile and two compression workers
-qz create project.qzra ./project --profile balanced --workers 2
+# Convert files/folders to native QZRA using the balanced profile and two compression workers
+qz convert project.qzra ./project --profile balanced --workers 2
+# The compatible `qz create` command remains available
+qz create another-project.qzra ./project
 # Optional encrypted archive (prompts for the passphrase)
 qz create private.qzra ./private --encrypt
 
@@ -112,10 +114,23 @@ See [`STATUS.md`](STATUS.md) for exact completion state and test evidence. The r
 Apache-2.0. See [`LICENSE`](LICENSE).
 
 
-## Android, desktop and Kotlin SDK (initial source implementation)
+## Android, desktop and Kotlin SDK (development source implementation)
 
-The repository now includes Gradle modules for a native Android app (`androidApp`), a JVM desktop app (`desktopApp`), a shared Kotlin engine (`core`) and a pre-1.0 Kotlin SDK (`sdk`). These modules provide real create/list/verify/extract flows for QZRA 1.1 in the Kotlin client. The Kotlin implementation rejects encrypted QZRA 1.2 explicitly; use the Python reference CLI for encryption, signatures, recovery and repository workflows.
+The repository includes Gradle modules for a native Android app (`androidApp`), a JVM desktop app (`desktopApp`), a shared Kotlin engine (`core`) and a pre-1.0 Kotlin SDK (`sdk`). The Kotlin reader supports QZRA 1.0/1.1 and authenticated AES-256-GCM QZRA 1.2 (password required), while the Kotlin writer currently creates unencrypted QZRA 1.1.
 
-The Android and desktop projects are source-complete only at an initial integration level. They have not yet been built by Gradle in this execution environment. GitHub Actions is configured in `.github/workflows/platform-builds.yml` to build the debug APK, test the Kotlin core/SDK and package the desktop distribution after the repository is pushed. Do not treat these artifacts as release-ready until those remote jobs pass and emulator/Windows/macOS/Linux tests are recorded.
+The Android app supports multiple individual files and complete folder trees. Its **Virtual Archive Explorer** opens the QZRA manifest, navigates immediate directory children interactively, reads and verifies a selected file directly from compressed archive blocks, and retains only bounded preview bytes. It supports text previews (2 MiB), PNG/JPEG/GIF/WEBP/BMP previews (16 MiB), and first-page PDF previews (16 MiB). Previewing does not unpack the archive entries to the user's storage, though the archive container is copied to private cache for random-access reads. Every successful file preview verifies the entire selected file's chunk and whole-file SHA-256 digests.
 
-See [Kotlin implementation status](docs/KOTLIN_IMPLEMENTATION.md), [Kotlin SDK guide](docs/KOTLIN_SDK.md) and [GitHub publishing instructions](GITHUB_SETUP.md).
+The explorer can extract one selected file, one selected folder subtree, or the complete archive while preserving relative paths and empty directory entries. Encrypted QZRA 1.2 archives prompt for their password and authenticate the manifest before the explorer is shown. DOCX/XLSX/ODT rendering, audio/video preview and password-protected archive creation in the Android UI are not implemented in this build; unsupported types can be extracted and opened with another application.
+
+The Kotlin core now has cross-language fixtures and JUnit tests for QZRA 1.0/1.1/1.2 reading, virtual folder navigation, bounded preview, selected extraction and wrong-password rejection. These JUnit tests still require a successful Gradle run on GitHub. Do not treat the updated Android UI as release-ready until `Platform builds` succeeds and the new APK passes physical-device, large-file, SAF-provider, lifecycle and low-storage tests. See [Android user guide](docs/ANDROID_USER_GUIDE.md) and [Kotlin implementation status](docs/KOTLIN_IMPLEMENTATION.md).
+
+See [Kotlin SDK guide](docs/KOTLIN_SDK.md) and [GitHub publishing instructions](GITHUB_SETUP.md).
+
+
+### Convert ordinary files and folders to native QZRA
+
+```bash
+qz convert backup.qzra ./folder file.txt
+```
+
+This is lossless archive packaging, not media/document transcoding. Original file bytes and relative paths are preserved inside the `.qzra` container.
