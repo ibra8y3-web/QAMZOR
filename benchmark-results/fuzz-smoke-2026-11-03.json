@@ -1,0 +1,8 @@
+{
+  "iterations": 2000,
+  "rejected_inputs": 1999,
+  "scope": "deterministic byte-mutation fuzzing; not coverage-guided",
+  "seed": 20261103,
+  "unexpected_exceptions": 0,
+  "verified_inputs": 1
+}
