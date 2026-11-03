@@ -1,22 +1,32 @@
-# QAMZOR Kotlin CI failure analysis and test corrections
+# QAMZOR CI failure correction report — 2026-11-03
 
-## Evidence from GitHub Actions
-The failing task is `:core:test`. The same two `ArchiveEngineTest` cases fail on Ubuntu, Windows, and macOS, while the Android job succeeds. This points to shared Kotlin core test assertions rather than an OS-specific SDK setup issue.
+## Failures reported from GitHub Actions
 
-## Root causes
+### Android `:androidApp:compileDebugKotlin`
 
-1. `virtualExplorerBrowsesDirectoriesAndPreviewsFileWithoutExtraction`
-   - The fixture creates its source file at `<temp>/Project/README.md`.
-   - The old assertion then expected that exact source path not to exist. That expectation contradicts the test setup; the preview API does not delete or move source files.
-   - Corrected the assertion to check that no extracted copy was created under a separate `preview-output` destination.
+1. `MainActivity.kt:78` — `takeLast` was applied directly to a Kotlin `Sequence`. Kotlin provides `takeLast` for lists, not for that sequence pipeline. The history sequence is now materialized with `toList()` before retaining the last 100 events.
+2. `MainActivity.kt:986` — `singleLine` was used as an unresolved synthetic property on `TextView`. Replaced with the explicit Android API call `setSingleLine(true)`.
 
-2. `virtualExplorerReadsLegacyArchiveWithoutFullExtraction`
-   - The expected preview text `legacy QAMZOR` is 13 UTF-8 bytes.
-   - The old test requested a 12-byte preview, then expected all 13 bytes. This is an off-by-one test error.
-   - Corrected the preview limit to 13 bytes. The fixture's file is 290 bytes, so `truncated` remains expected to be true.
+### Kotlin Core `:core:test`
 
-## Scope
-Only the two incorrect test assertions/limits were changed. The archive engine behavior was not weakened, and tests were not skipped.
+`ArchiveEngineTest.comparesArchiveContentUsingVerifiedSha256RatherThanOnlyFileSizes` failed because `compareContent` included the shared parent directory `Project` in the `unchanged` list. The test is a file-content comparison and expects payload file paths, not structural directory records. The implementation now filters both manifests to regular file entries after verifying the complete archives. Added/removed/changed/unchanged results therefore describe file payloads. SHA-256 verification remains mandatory and unchanged.
 
-## Validation limitation
-This workspace does not contain `gradlew`, Gradle wrapper files, or a system `gradle` executable, so `:core:test` could not be executed locally here. GitHub Actions must be rerun to establish the Kotlin result on the three CI operating systems.
+## SDK licenses
+
+The supplied log progressed through Android resource processing and reached Kotlin compilation. Therefore SDK license acceptance was not the cause of these particular failures. The workflow already has an explicit SDK license acceptance/install step; no license workaround is needed to explain these diagnostics.
+
+## Validation in this workspace
+
+- `PYTHONPATH=src python -m pytest -q`: **90 passed, 9 subtests passed**.
+- Reviewed both Android source corrections at the exact reported locations.
+- Reviewed the file-only content-comparison change and regression assertion.
+- Gradle is not installed in this workspace and no Gradle wrapper is present, so the Kotlin JUnit suite and Android APK could not be rebuilt locally. GitHub Actions must be rerun against this corrected source ZIP to confirm those jobs pass.
+
+## Files changed
+
+- `androidApp/src/main/java/org/qamzor/android/MainActivity.kt`
+- `core/src/main/kotlin/org/qamzor/core/ArchiveEngine.kt`
+- `core/src/test/kotlin/org/qamzor/core/ArchiveEngineTest.kt`
+- `CHANGELOG.md`
+- `CI_FAILURE_FIX_REPORT.md`
+- `VALIDATION_RESULTS.txt`

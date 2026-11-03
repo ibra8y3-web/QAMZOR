@@ -318,6 +318,7 @@ class ArchiveEngineTest {
             assertEquals(listOf("Project/added.txt"), report.added)
             assertEquals(listOf("Project/removed.txt"), report.removed)
             assertEquals(listOf("Project/same-size.bin"), report.changed)
+            // Parent directory records are structural metadata, not file-content deltas.
             assertEquals(listOf("Project/same.bin"), report.unchanged)
         } finally { root.deleteRecursively() }
     }

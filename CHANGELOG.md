@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2-dev — CI failure corrections — 2026-11-03
+
+- Fixed Android operation-history restoration by materializing the filtered `Sequence` before applying `takeLast(100)`.
+- Replaced the invalid Kotlin synthetic property `singleLine` with the explicit Android `TextView.setSingleLine(true)` call.
+- Corrected Kotlin archive content comparison to compare payload files only; parent directory records are structural metadata and are no longer included in added/removed/changed/unchanged file-content lists.
+- Kept SHA-256 verification of both archives before comparing file digests; no tests were disabled and no integrity checks were removed.
+- Re-ran the Python regression suite after the patch: 90 passed, 9 subtests passed. Gradle/JUnit and Android APK builds still require the GitHub Actions runner.
+
 ## 0.7.2-dev — 2026-11-03
 
 - Added QZRA 1.3 reader/writer paths to Kotlin Core: encrypted manifest, hidden entry count, purpose-separated subkeys, independent folder scopes, scope-bound chunk authentication and scope-aware deduplication.

@@ -1,0 +1,14 @@
+{
+  "tests/test_chunking.py::ContentDefinedChunkingTests": true,
+  "tests/test_cli.py::QamzorCliConversionTests": true,
+  "tests/test_cloud_providers.py::CloudProviderTests": true,
+  "tests/test_fuzz_smoke.py::QZRAMutationSmokeTests": true,
+  "tests/test_product_features.py::ProductFeatureTests": true,
+  "tests/test_product_features.py::CloudBackupTests": true,
+  "tests/test_qzra.py::QZRATests": true,
+  "tests/test_qzra.py::QZRA13Tests": true,
+  "tests/test_recovery.py::RecoveryTests": true,
+  "tests/test_repository.py::RepositoryTests": true,
+  "tests/test_scheduler.py::BoundedSchedulerTests": true,
+  "tests/test_signatures.py::SignatureTests": true
+}

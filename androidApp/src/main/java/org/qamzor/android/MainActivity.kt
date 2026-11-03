@@ -75,7 +75,7 @@ class MainActivity : Activity() {
         val saved = preferences.getString("events", "").orEmpty()
         synchronized(operationHistory) {
             operationHistory.clear()
-            if (saved.isNotEmpty()) operationHistory.addAll(saved.lineSequence().filter { it.isNotBlank() }.takeLast(100))
+            if (saved.isNotEmpty()) operationHistory.addAll(saved.lineSequence().filter { it.isNotBlank() }.toList().takeLast(100))
             val previousPid = preferences.getInt("active_pid", -1)
             val previousLabel = preferences.getString("active_label", null)
             if (previousPid > 0 && previousPid != android.os.Process.myPid()) {
@@ -983,7 +983,7 @@ class MainActivity : Activity() {
                         setTextColor(0xFFF4F7FF.toInt())
                         maxLines = 1
                         ellipsize = TextUtils.TruncateAt.END
-                        singleLine = true
+                        setSingleLine(true)
                     })
                     labels.addView(TextView(this).apply {
                         text = if (source.isDirectory) "مجلد كامل • ${source.list()?.size ?: 0} عناصر مباشرة"

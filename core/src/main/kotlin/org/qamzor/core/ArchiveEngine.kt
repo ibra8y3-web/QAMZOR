@@ -510,7 +510,7 @@ object ArchiveEngine {
      * Compare two archives by verified SHA-256 content fingerprints. Each archive
      * is fully decoded and verified before its manifest digests are compared;
      * matching names and sizes alone are never treated as content equality.
-     * Currently supports the Kotlin engine's QZRA 1.0-1.2 readers.
+     * Supports verified content comparison for QZRA 1.0-1.3 archives.
      */
     @JvmStatic
     fun compareContent(
@@ -523,8 +523,12 @@ object ArchiveEngine {
         require(leftVerification.valid && rightVerification.valid) { "An archive failed content verification" }
         val leftContext = readManifest(leftArchive, leftPassword, leftFolderPasswords)
         val rightContext = readManifest(rightArchive, rightPassword, rightFolderPasswords)
-        val leftEntries = leftContext.second.entries.associateBy { it.path }
-        val rightEntries = rightContext.second.entries.associateBy { it.path }
+        // Directory records describe the archive tree, not file content. Exclude
+        // them from the content delta so an unchanged parent directory is not
+        // reported as an unchanged payload item. Empty-directory changes do not
+        // affect the file-content comparison result.
+        val leftEntries = leftContext.second.entries.filter { it.type == "file" }.associateBy { it.path }
+        val rightEntries = rightContext.second.entries.filter { it.type == "file" }.associateBy { it.path }
         val added = (rightEntries.keys - leftEntries.keys).sorted()
         val removed = (leftEntries.keys - rightEntries.keys).sorted()
         val changed = ArrayList<String>()
