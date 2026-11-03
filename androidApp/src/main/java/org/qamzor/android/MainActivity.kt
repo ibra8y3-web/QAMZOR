@@ -29,6 +29,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import androidx.documentfile.provider.DocumentFile
 import org.qamzor.core.ArchiveEngine
@@ -43,6 +44,17 @@ class MainActivity : Activity() {
     private lateinit var operationHealth: TextView
     private lateinit var verifiedFiles: TextView
     private lateinit var verifiedBytes: TextView
+    private lateinit var pageTitle: TextView
+    private lateinit var explorerContainer: LinearLayout
+    private lateinit var explorerPathText: TextView
+    private lateinit var archiveInfoText: TextView
+    private lateinit var logSummary: TextView
+    private lateinit var logText: TextView
+    private val pages = ArrayList<View>()
+    private val navBoxes = ArrayList<View>()
+    private val navIcons = ArrayList<QamzorLineIconView>()
+    private val navLabels = ArrayList<TextView>()
+    private var currentTab = 0
     private val selectedSources = ArrayList<File>()
     private val backgroundTaskLock = Any()
     @Volatile private var backgroundBusy = false
@@ -51,21 +63,57 @@ class MainActivity : Activity() {
     private var pendingExtraction: File? = null
     private var pendingExtractionPaths: Set<String>? = null
     private var openedArchive: File? = null
+    private var openedArchiveLabel: String = ""
     private var openedArchivePassword: String? = null
-    private var explorerDialog: AlertDialog? = null
-    private var protectArchiveWithPassword = false
-    private var hideArchiveMetadata = false
+    private var openedProtected: Set<String> = emptySet()
+    private var explorerPath: String = ""
     private val operationHistory = java.util.Collections.synchronizedList(mutableListOf<String>())
     private val openedFolderPasswords: MutableMap<String, String> = java.util.Collections.synchronizedMap(LinkedHashMap())
+    /** Independent folder passwords chosen on the Create page: archive-relative folder path -> password. */
+    private val folderLocks = LinkedHashMap<String, String>()
+    private val expandedDirs = HashSet<String>()
     @Volatile private var activeOperationLabel: String? = null
     @Volatile private var activeOperationStartedAt: Long? = null
-    private var protectArchiveCheckBox: CheckBox? = null
-    private var hideMetadataCheckBox: CheckBox? = null
+    private var protectSwitch: Switch? = null
+    private var protectFields: View? = null
+    private var passwordField: EditText? = null
+    private var confirmField: EditText? = null
+    private var hideNamesBox: CheckBox? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) purgeStaleCache()
         restoreOperationHistory()
         buildInterface()
+        if (savedInstanceState == null) handleViewIntent(intent)
+    }
+
+    /** Plain-text working copies never outlive the process that made them. */
+    private fun purgeStaleCache() {
+        try {
+            File(cacheDir, "qamzor-selected-sources").deleteRecursively()
+            cacheDir.listFiles()?.filter {
+                it.name.startsWith("qamzor-") || it.name.startsWith("QAMZOR-") || it.name.startsWith("selected-archive-")
+            }?.forEach { it.deleteRecursively() }
+        } catch (_: Exception) { /* best effort */ }
+    }
+
+    /** Double-tapping a .qzra file in any file manager opens it here. */
+    private fun handleViewIntent(launch: Intent?) {
+        val uri = launch?.takeIf { it.action == Intent.ACTION_VIEW }?.data ?: return
+        selectTab(1)
+        browseSelectedArchive(uri)
+    }
+
+    override fun onBackPressed() {
+        if (currentTab == 1 && openedArchive != null && explorerPath.isNotEmpty()) {
+            showVirtualExplorer(explorerPath.substringBeforeLast('/', ""))
+        } else if (currentTab != 0) {
+            selectTab(0)
+        } else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
     }
 
     private fun operationPreferences() = getSharedPreferences("qamzor-operation-center", Context.MODE_PRIVATE)
@@ -94,202 +142,509 @@ class MainActivity : Activity() {
             while (operationHistory.size > 100) operationHistory.removeAt(0)
             operationPreferences().edit().putString("events", operationHistory.joinToString("\n")).apply()
         }
+        runOnUiThread { refreshOperationLog() }
     }
 
-    private fun buildInterface() {
-        window.statusBarColor = 0xFF101D36.toInt()
-        window.navigationBarColor = 0xFF101D36.toInt()
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = 0
+    // ───────────────────────────── Shell: header, pages, status strip, bottom navigation ─────────────────────────────
 
-        val root = LinearLayout(this).apply {
+    private fun buildInterface() {
+        window.statusBarColor = COLOR_BAR
+        window.navigationBarColor = COLOR_BAR
+
+        val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(dp(16), dp(12), dp(16), dp(20))
-            background = rounded(0xFF0B1730.toInt(), 0)
-        }
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            clipToPadding = false
-            isVerticalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-            setBackgroundColor(0xFF0B1730.toInt())
-            addView(root)
+            setBackgroundColor(COLOR_BG)
         }
 
-        val brand = LinearLayout(this).apply {
+        val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(2), dp(5), dp(2), dp(14))
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            setBackgroundColor(COLOR_BAR)
         }
         val mark = TextView(this).apply {
             text = "▣"
-            textSize = 24f
+            textSize = 15f
             gravity = Gravity.CENTER
             setTextColor(0xFFBBD2FF.toInt())
-            background = rounded(0xFF263F70.toInt(), 15)
-            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+            background = rounded(0xFF263F70.toInt(), 9)
         }
-        val brandText = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(11), 0, 0, 0)
-        }
-        brandText.addView(TextView(this).apply {
-            text = "QAMZOR"
-            textSize = 27f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(0xFFF7FAFF.toInt())
-        })
-        brandText.addView(TextView(this).apply {
-            text = "THE NEXT ARCHIVE EXPERIENCE"
-            textSize = 9f
-            setTextColor(0xFF9FB5D9.toInt())
-            letterSpacing = .07f
-        })
-        brand.addView(mark)
-        brand.addView(brandText, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(brand)
+        header.addView(mark, LinearLayout.LayoutParams(dp(30), dp(30)))
+        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        titles.addView(label("QAMZOR", 15f, 0xFFF7FAFF.toInt(), true))
+        pageTitle = label(TAB_TITLES[0], 11f, 0xFF9FB5D9.toInt(), false)
+        titles.addView(pageTitle)
+        header.addView(titles, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
+        shell.addView(header, LinearLayout.LayoutParams(-1, -2))
 
-        val hero = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(16))
-            background = rounded(0xFF1C2D50.toInt(), 18)
-        }
-        hero.addView(TextView(this).apply {
-            text = "مساحة الأرشيف الذكية"
-            textSize = 12f
-            setTextColor(0xFFB7C9E8.toInt())
-        })
-        hero.addView(TextView(this).apply {
-            text = "إدارة ملفاتك بذكاء"
-            textSize = 23f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, dp(5), 0, dp(4))
-        })
-        hero.addView(TextView(this).apply {
-            text = "إنشاء وفحص واستعراض وتحويل أرشيفات QZRA من مكان واحد."
-            textSize = 13f
-            setTextColor(0xFFD4E0F5.toInt())
+        status = TextView(this).apply {
+            text = "جاهز للعمل."
+            textSize = 11.5f
+            setTextColor(0xFFDCE7F8.toInt())
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
-        })
-        root.addView(hero, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            setBackgroundColor(0xFF14223F.toInt())
+            isClickable = true
+            setOnClickListener { selectTab(3) }
+        }
 
-        root.addView(sectionLabel("الأدوات الرئيسية"))
-        addTileRow(root,
-            dashboardTile("إضافة ملفات", "تحديد ملفات متعددة", "file") { pickFiles() },
-            dashboardTile("استعراض الأرشيف", "تصفح المحتويات", "folder_search") { pickArchive(REQUEST_BROWSE) })
-        addTileRow(root,
-            dashboardTile("تحويل إلى QZRA", "صيغة البرنامج", "convert") { convertSelectedToQzra() },
-            dashboardTile("فحص السلامة", "تحقق SHA-256", "shield_check") { pickArchive(REQUEST_VERIFY) })
-        addTileRow(root,
-            dashboardTile("استخراج الأرشيف", "كامل أو انتقائي", "extract") { pickArchive(REQUEST_EXTRACT) },
-            dashboardTile("إضافة مجلد", "المجلدات الفرعية", "folder_add") { pickFolder() })
-        addTileRow(root,
-            dashboardTile("مقارنة أرشيفين", "SHA-256 للمحتوى", "compare") { pickArchiveComparison() },
-            dashboardTile("مركز العمليات", "الحالة وسجل التنفيذ", "activity") { showOperationCenter() })
+        val pageHost = FrameLayout(this)
+        pages.add(buildCreatePage())
+        pages.add(buildOpenPage())
+        pages.add(buildToolsPage())
+        pages.add(buildOperationsPage())
+        for (page in pages) pageHost.addView(page, FrameLayout.LayoutParams(-1, -1))
+        shell.addView(pageHost, LinearLayout.LayoutParams(-1, 0, 1f))
+        shell.addView(status, LinearLayout.LayoutParams(-1, -2))
 
-        root.addView(sectionLabel("مصادر التحويل"))
-        val sourcesPanel = LinearLayout(this).apply {
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setBackgroundColor(COLOR_BAR)
+            setPadding(dp(6), dp(3), dp(6), dp(3))
+        }
+        val specs = listOf("create" to "إنشاء", "folder_search" to "فتح", "tools" to "أدوات", "activity" to "العمليات")
+        for ((index, spec) in specs.withIndex()) {
+            val icon = QamzorLineIconView(this, spec.first, NAV_IDLE)
+            val caption = TextView(this).apply {
+                text = spec.second
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setTextColor(NAV_IDLE)
+            }
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(0, dp(5), 0, dp(4))
+                isClickable = true
+                isFocusable = true
+                contentDescription = spec.second
+                setOnClickListener { selectTab(index) }
+            }
+            box.addView(icon, LinearLayout.LayoutParams(dp(20), dp(20)))
+            box.addView(caption, LinearLayout.LayoutParams(-2, -2))
+            navBoxes.add(box); navIcons.add(icon); navLabels.add(caption)
+            nav.addView(box, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
+        }
+        shell.addView(nav, LinearLayout.LayoutParams(-1, -2))
+
+        setContentView(shell)
+        selectTab(0)
+        renderEmptyExplorer()
+        refreshSelectionSummary()
+        refreshOperationLog()
+    }
+
+    private fun selectTab(index: Int) {
+        currentTab = index
+        for ((position, page) in pages.withIndex()) page.visibility = if (position == index) View.VISIBLE else View.GONE
+        for (position in navBoxes.indices) {
+            val selected = position == index
+            val color = if (selected) 0xFFFFFFFF.toInt() else NAV_IDLE
+            navIcons[position].applyTint(color)
+            navLabels[position].setTextColor(color)
+            navBoxes[position].background = rounded(if (selected) 0xFF2A4678.toInt() else 0x00000000, 12)
+        }
+        pageTitle.text = TAB_TITLES[index]
+        if (index == 3) refreshOperationLog()
+    }
+
+    private fun pageScroll(content: View): ScrollView = ScrollView(this).apply {
+        isFillViewport = false
+        clipToPadding = false
+        isVerticalScrollBarEnabled = false
+        setBackgroundColor(COLOR_BG)
+        addView(content)
+    }
+
+    private fun pageColumn(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutDirection = View.LAYOUT_DIRECTION_RTL
+        setPadding(dp(14), dp(12), dp(14), dp(18))
+    }
+
+    // ───────────────────────────── Page 1: Create ─────────────────────────────
+
+    private fun buildCreatePage(): View {
+        val column = pageColumn()
+        val addRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        addRow.addView(actionButton("plus", "إضافة ملفات", false) { pickFiles() },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(5) })
+        addRow.addView(actionButton("folder_add", "إضافة مجلد", false) { pickFolder() },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(5) })
+        column.addView(addRow)
+
+        val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = rounded(0xFF142441.toInt(), 16)
+            background = rounded(0xFF142441.toInt(), 14)
         }
-        val sourcesHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        sourcesHeader.addView(TextView(this).apply {
-            text = "العناصر المحددة"
-            textSize = 13f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(0xFFE7EFFD.toInt())
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        sourcesHeader.addView(TextView(this).apply {
-            text = "تُحفظ كما هي داخل الحاوية"
-            textSize = 10f
-            setTextColor(0xFF9FB4D3.toInt())
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(label("العناصر المحددة", 13f, 0xFFE7EFFD.toInt(), true), LinearLayout.LayoutParams(0, -2, 1f))
+        head.addView(label("مسح الكل", 11.5f, 0xFF9FB4D3.toInt(), false).apply {
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            isClickable = true
+            setOnClickListener { clearSelection() }
         })
-        sourcesPanel.addView(sourcesHeader)
+        panel.addView(head)
         sourcesListContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, dp(4))
+            setPadding(0, dp(8), 0, dp(2))
         }
-        sourcesPanel.addView(sourcesListContainer)
-        sourcesPanel.addView(TextView(this).apply {
-            text = "سيتم حفظ البيانات الأصلية كما هي داخل الحاوية. لا يتم تعديل ملفات المصدر."
-            textSize = 11f
-            setTextColor(0xFF91A8CA.toInt())
-            setPadding(dp(2), dp(7), dp(2), dp(2))
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
+        panel.addView(sourcesListContainer)
+        panel.addView(label("اضغط أيقونة القفل بجانب أي مجلد لتعيين كلمة مرور مستقلة له.", 10.5f, 0xFF8FA6C9.toInt(), false)
+            .apply { setPadding(dp(2), dp(4), dp(2), 0) })
+        column.addView(panel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+
+        val protection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(10))
+            background = rounded(0xFF142441.toInt(), 14)
+        }
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val password = inputField("كلمة مرور الأرشيف (10 أحرف على الأقل)", true)
+        val confirm = inputField("تأكيد كلمة المرور", true)
+        val hideNames = CheckBox(this).apply {
+            text = "إخفاء أسماء الملفات والمجلدات وأحجامها (QZRA 1.3)"
+            textSize = 12f
+            isChecked = true
+            setTextColor(0xFFD8E5F8.toInt())
+            buttonTintList = ColorStateList.valueOf(0xFF8FB4F4.toInt())
+        }
+        fields.addView(password, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        fields.addView(confirm, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        fields.addView(hideNames, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        fields.addView(label("كلمات المرور لا تُحفظ في أي مكان. فقدانها يعني عدم إمكانية استعادة الملفات.", 10.5f, 0xFF8FA6C9.toInt(), false))
+        val toggle = Switch(this).apply {
+            text = "حماية الأرشيف بكلمة مرور"
+            textSize = 14f
+            setTextColor(0xFFF4F7FF.toInt())
+            setPadding(0, dp(4), 0, dp(4))
+            setOnCheckedChangeListener { _, checked -> fields.visibility = if (checked) View.VISIBLE else View.GONE }
+        }
+        protection.addView(toggle, LinearLayout.LayoutParams(-1, -2))
+        protection.addView(fields, LinearLayout.LayoutParams(-1, -2))
+        protectSwitch = toggle; protectFields = fields; passwordField = password; confirmField = confirm; hideNamesBox = hideNames
+        column.addView(protection, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+
+        column.addView(actionButton("create", "إنشاء أرشيف QZRA", true) { convertSelectedToQzra() },
+            LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(12) })
+        return pageScroll(column)
+    }
+
+    // ───────────────────────────── Page 2: Open / explorer ─────────────────────────────
+
+    private fun buildOpenPage(): View {
+        val column = pageColumn()
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        row.addView(actionButton("folder_search", "فتح أرشيف", true) { pickArchive(REQUEST_BROWSE) },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
+        row.addView(actionButton("extract", "استخراج", false) { extractOpenedArchive() },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        row.addView(actionButton("shield_check", "فحص", false) { verifyOpenedArchive() },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        row.addView(actionButton("close", "إغلاق", false) { closeOpenedArchive() },
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
+        column.addView(row)
+        archiveInfoText = label("", 12.5f, 0xFFE7EFFD.toInt(), true).apply { setPadding(dp(2), dp(12), dp(2), dp(0)) }
+        explorerPathText = label("", 11f, 0xFF9FB4D3.toInt(), false).apply { setPadding(dp(2), dp(2), dp(2), dp(8)) }
+        column.addView(archiveInfoText)
+        column.addView(explorerPathText)
+        explorerContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(explorerContainer, LinearLayout.LayoutParams(-1, -2))
+        return pageScroll(column)
+    }
+
+    private fun renderEmptyExplorer() {
+        explorerContainer.removeAllViews()
+        archiveInfoText.text = "لا يوجد أرشيف مفتوح"
+        explorerPathText.text = ""
+        explorerContainer.addView(label("افتح ملف .qzra لعرض محتوياته. الأرشيفات المشفّرة لا يقرأها أي تطبيق آخر.", 12f, 0xFF9FB4D3.toInt(), false)
+            .apply { setPadding(dp(4), dp(10), dp(4), dp(10)) })
+    }
+
+    private fun explorerRow(kind: String, title: String, subtitle: String, highlight: Boolean, onClick: () -> Unit, onLong: (() -> Unit)? = null): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+            setPaddingRelative(dp(10), dp(4), dp(10), dp(4))
+            background = rounded(0xFF1D3152.toInt(), 12)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+            if (onLong != null) setOnLongClickListener { onLong(); true }
+        }
+        row.addView(QamzorLineIconView(this, kind, if (highlight) 0xFFFFD27A.toInt() else 0xFFBBD2FF.toInt()),
+            LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(10) })
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(label(title, 13f, 0xFFF4F7FF.toInt(), true).apply {
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setSingleLine(true)
         })
-        protectArchiveCheckBox = CheckBox(this).apply {
-            text = "حماية أرشيف QZRA بكلمة مرور (اختياري)"
-            textSize = 12f
-            setTextColor(0xFFD8E5F8.toInt())
-            buttonTintList = ColorStateList.valueOf(0xFF8FB4F4.toInt())
-            isChecked = false
-            setOnCheckedChangeListener { _, checked ->
-                protectArchiveWithPassword = checked
-                hideMetadataCheckBox?.isEnabled = checked
-                if (!checked) hideMetadataCheckBox?.isChecked = false
+        if (subtitle.isNotEmpty()) texts.addView(label(subtitle, 10.5f, 0xFF9FB4D3.toInt(), false).apply { maxLines = 1 })
+        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        return row
+    }
+
+    private fun renderExplorer(path: String, children: List<ArchiveEngine.BrowseItem>) {
+        explorerPath = path
+        explorerContainer.removeAllViews()
+        archiveInfoText.text = openedArchiveLabel.ifEmpty { "أرشيف QZRA" }
+        explorerPathText.text = if (path.isBlank()) "/  •  ${children.size} عنصر" else "/$path  •  ${children.size} عنصر"
+        val gap = LinearLayout.LayoutParams(-1, dp(52)).apply { bottomMargin = dp(5) }
+        if (path.isNotBlank()) {
+            explorerContainer.addView(
+                explorerRow("folder", "..  المجلد السابق", "", false, { showVirtualExplorer(path.substringBeforeLast('/', "")) }),
+                LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(5) })
+        }
+        if (children.isEmpty()) {
+            explorerContainer.addView(label("هذا المجلد فارغ.", 12f, 0xFF9FB4D3.toInt(), false).apply { setPadding(dp(4), dp(10), dp(4), dp(10)) })
+        }
+        for (item in children) {
+            val isDirectory = item.type == "directory"
+            val protectedFolder = isDirectory && openedProtected.contains(item.path)
+            val unlocked = protectedFolder && openedFolderPasswords.containsKey(item.path)
+            val icon = when {
+                !isDirectory -> "file"
+                protectedFolder && unlocked -> "unlock"
+                protectedFolder -> "lock"
+                else -> "folder"
             }
+            val subtitle = when {
+                !isDirectory -> formatBytes(item.size)
+                protectedFolder && unlocked -> "محمي بكلمة مرور مستقلة — مفتوح في هذه الجلسة"
+                protectedFolder -> "محمي بكلمة مرور مستقلة"
+                else -> "مجلد"
+            }
+            val row = if (isDirectory) {
+                explorerRow(icon, item.name, subtitle, protectedFolder && !unlocked, { enterFolder(item.path) }, {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle(item.name)
+                        .setItems(arrayOf("فتح المجلد", "استخراج هذا المجلد فقط")) { _, which ->
+                            if (which == 0) enterFolder(item.path) else requestSelectedExtraction(item.path)
+                        }.show()
+                })
+            } else {
+                explorerRow(icon, item.name, subtitle, false, { showFileActions(item.path, item.size) }, { showFileActions(item.path, item.size) })
+            }
+            explorerContainer.addView(row, LinearLayout.LayoutParams(-1, dp(52)).apply { bottomMargin = dp(5) })
         }
-        sourcesPanel.addView(protectArchiveCheckBox)
-        hideMetadataCheckBox = CheckBox(this).apply {
-            text = "إخفاء أسماء الملفات والبيانات — QZRA 1.3"
-            textSize = 12f
-            setTextColor(0xFFD8E5F8.toInt())
-            buttonTintList = ColorStateList.valueOf(0xFF8FB4F4.toInt())
-            isEnabled = protectArchiveWithPassword
-            setOnCheckedChangeListener { _, checked -> hideArchiveMetadata = checked }
-        }
-        sourcesPanel.addView(hideMetadataCheckBox)
-        root.addView(sourcesPanel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+    }
 
-        val sourceActions = LinearLayout(this).apply {
+    /** Entering a protected folder asks for that folder's own password first. */
+    private fun enterFolder(path: String) {
+        val archive = openedArchive ?: return
+        val scope = openedProtected.filter { path == it || path.startsWith("$it/") }.maxByOrNull { it.length }
+        if (scope != null && !openedFolderPasswords.containsKey(scope)) {
+            promptFolderPassword(scope, archive, openedArchivePassword) { showVirtualExplorer(path) }
+        } else {
+            showVirtualExplorer(path)
+        }
+    }
+
+    private fun showVirtualExplorer(path: String) {
+        val archive = openedArchive ?: return
+        runOnWorker("تعذر قراءة مجلد الأرشيف") {
+            val children = ArchiveEngine.browse(archive, path, openedArchivePassword)
+            runOnUiThread { renderExplorer(path, children) }
+        }
+    }
+
+    private fun closeOpenedArchive() {
+        if (openedArchive == null) {
+            status.text = "لا يوجد أرشيف مفتوح."
+            return
+        }
+        try { openedArchive?.delete() } catch (_: Exception) { /* best effort */ }
+        openedArchive = null
+        pendingExtraction = null
+        pendingExtractionPaths = null
+        openedArchivePassword = null
+        openedProtected = emptySet()
+        openedFolderPasswords.clear()
+        explorerPath = ""
+        renderEmptyExplorer()
+        status.text = "تم إغلاق الأرشيف ومسح كلمات المرور من الذاكرة."
+    }
+
+    private fun extractOpenedArchive() {
+        if (openedArchive == null) {
+            status.text = "افتح أرشيفًا أولًا من زر «فتح أرشيف»."
+            return
+        }
+        requestSelectedExtraction(null)
+    }
+
+    private fun verifyOpenedArchive() {
+        val archive = openedArchive
+        if (archive == null) {
+            status.text = "افتح أرشيفًا أولًا من زر «فتح أرشيف»."
+            return
+        }
+        resetVerificationMetrics()
+        runOnWorker("فشل فحص الأرشيف") { verifyArchiveFile(archive, openedArchivePassword) }
+    }
+
+    private fun installOpenedArchive(archive: File, name: String, password: String?, protectedPaths: Set<String>) {
+        val previous = openedArchive
+        openedArchive = archive
+        pendingExtraction = archive
+        openedArchiveLabel = name
+        openedArchivePassword = password
+        openedProtected = protectedPaths
+        openedFolderPasswords.clear()
+        explorerPath = ""
+        if (previous != null && previous != archive) {
+            try { previous.delete() } catch (_: Exception) { /* best effort */ }
+        }
+    }
+
+    private fun needsArchivePassword(error: Exception): Boolean {
+        val message = error.message.orEmpty()
+        return (message.contains("encrypted", ignoreCase = true) && message.contains("password", ignoreCase = true)) ||
+            message.contains("QZRA 1.3", ignoreCase = true)
+    }
+
+    // ───────────────────────────── Page 3: Tools ─────────────────────────────
+
+    private fun toolRow(kind: String, title: String, subtitle: String, action: () -> Unit): View {
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
             gravity = Gravity.CENTER_VERTICAL
+            setPaddingRelative(dp(12), dp(6), dp(12), dp(6))
+            background = rounded(0xFF1D3152.toInt(), 12)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { action() }
+            contentDescription = "$title. $subtitle"
         }
-        sourceActions.addView(compactAction("＋", "إضافة ملفات") { pickFiles() },
-            LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(6) })
-        sourceActions.addView(compactAction("×", "مسح الاختيار") { clearSelection() },
-            LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(6) })
-        root.addView(sourceActions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        row.addView(iconBadge(kind, 0x334B73AA, 0xFFBBD2FF.toInt(), 34), LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(10) })
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(label(title, 13.5f, 0xFFF4F7FF.toInt(), true))
+        texts.addView(label(subtitle, 11f, 0xFF9FB4D3.toInt(), false))
+        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        return row
+    }
 
-        root.addView(sectionLabel("مركز العمليات"))
-        status = infoPanel("جاهز للعمل. اختر إحدى الأدوات للبدء.")
-        root.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
+    private fun buildToolsPage(): View {
+        val column = pageColumn()
+        val rowParams = { LinearLayout.LayoutParams(-1, dp(56)).apply { bottomMargin = dp(7) } }
+        column.addView(toolRow("shield_check", "فحص السلامة", "تحقق SHA-256 لكل ملفات الأرشيف") { pickArchive(REQUEST_VERIFY) }, rowParams())
+        column.addView(toolRow("extract", "استخراج أرشيف", "كامل أو ملف/مجلد محدد") { pickArchive(REQUEST_EXTRACT) }, rowParams())
+        column.addView(toolRow("compare", "مقارنة أرشيفين", "مقارنة المحتوى ببصمات SHA-256") { pickArchiveComparison() }, rowParams())
 
-        val metricsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
+        column.addView(sectionLabel("نتيجة آخر فحص"))
+        val metricsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val healthCard = metricCard("حالة الأرشيف", "لم يُفحص", 0xFFCBD8EC.toInt())
         operationHealth = healthCard.second
         val filesCard = metricCard("الملفات المفحوصة", "—", 0xFFFFFFFF.toInt())
         verifiedFiles = filesCard.second
         val bytesCard = metricCard("البيانات المتحققة", "—", 0xFFFFFFFF.toInt())
         verifiedBytes = bytesCard.second
-        metricsRow.addView(healthCard.first, LinearLayout.LayoutParams(0, dp(76), 1f).apply { marginEnd = dp(4) })
-        metricsRow.addView(filesCard.first, LinearLayout.LayoutParams(0, dp(76), 1f).apply {
-            marginStart = dp(4)
-            marginEnd = dp(4)
-        })
-        metricsRow.addView(bytesCard.first, LinearLayout.LayoutParams(0, dp(76), 1f).apply { marginStart = dp(4) })
-        root.addView(metricsRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        metricsRow.addView(healthCard.first, LinearLayout.LayoutParams(0, dp(70), 1f).apply { marginEnd = dp(4) })
+        metricsRow.addView(filesCard.first, LinearLayout.LayoutParams(0, dp(70), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        metricsRow.addView(bytesCard.first, LinearLayout.LayoutParams(0, dp(70), 1f).apply { marginStart = dp(4) })
+        column.addView(metricsRow, LinearLayout.LayoutParams(-1, -2))
+        column.addView(label("QAMZOR  •  QZRA Archive System", 10f, 0xFF8299BE.toInt(), false)
+            .apply { gravity = Gravity.CENTER; setPadding(0, dp(18), 0, dp(2)) })
+        return pageScroll(column)
+    }
 
-        root.addView(TextView(this).apply {
-            text = "QAMZOR  •  QZRA Archive System"
-            textSize = 10f
-            gravity = Gravity.CENTER
-            setTextColor(0xFF8299BE.toInt())
-            setPadding(0, dp(14), 0, dp(2))
+    // ───────────────────────────── Page 4: Operations ─────────────────────────────
+
+    private fun buildOperationsPage(): View {
+        val column = pageColumn()
+        logSummary = label("", 12.5f, 0xFFE7EFFD.toInt(), true).apply {
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(0xFF1A2A49.toInt(), 12)
+        }
+        column.addView(logSummary, LinearLayout.LayoutParams(-1, -2))
+        logText = label("", 11.5f, 0xFFC9D8F0.toInt(), false).apply {
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(0xFF142441.toInt(), 12)
+        }
+        column.addView(logText, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        column.addView(actionButton("trash", "مسح السجل", false) {
+            synchronized(operationHistory) {
+                operationHistory.clear()
+                operationPreferences().edit().remove("events").apply()
+            }
+            refreshOperationLog()
+        }, LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(10) })
+        return pageScroll(column)
+    }
+
+    private fun refreshOperationLog() {
+        if (!::logText.isInitialized || !::logSummary.isInitialized) return
+        val snapshot = synchronized(operationHistory) { operationHistory.toList().takeLast(60) }
+        val current = activeOperationLabel?.let {
+            val elapsed = activeOperationStartedAt?.let { start -> ((System.currentTimeMillis() - start) / 1000).coerceAtLeast(0) } ?: 0
+            "العملية النشطة: $it  (${elapsed} ثانية)"
+        } ?: "لا توجد عملية نشطة الآن."
+        val completed = snapshot.count { it.contains("اكتملت") }
+        val failed = snapshot.count { it.contains("فشلت") }
+        val interrupted = snapshot.count { it.contains("توقفت العملية") }
+        logSummary.text = current + "\nالسجل: ${snapshot.size} • ناجحة: $completed • فاشلة: $failed • متوقفة: $interrupted"
+        logText.text = if (snapshot.isEmpty()) "لا توجد عمليات مسجلة بعد." else snapshot.asReversed().joinToString("\n\n")
+    }
+
+    // ───────────────────────────── Small view helpers ─────────────────────────────
+
+    private fun label(text: String, size: Float, color: Int, bold: Boolean): TextView = TextView(this).apply {
+        this.text = text
+        textSize = size
+        setTextColor(color)
+        if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
+    }
+
+    private fun sectionLabel(text: String): TextView = label(text, 13f, 0xFFB9D0F7.toInt(), true).apply {
+        setPadding(dp(2), dp(14), dp(2), dp(7))
+    }
+
+    private fun inputField(hintText: String, secret: Boolean): EditText = EditText(this).apply {
+        hint = hintText
+        setHintTextColor(0xFF7F95BA.toInt())
+        setTextColor(0xFFF4F7FF.toInt())
+        textSize = 13.5f
+        inputType = if (secret) android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            else android.text.InputType.TYPE_CLASS_TEXT
+        setSingleLine(true)
+        background = rounded(0xFF1D3152.toInt(), 10)
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+    }
+
+    private fun dialogField(hintText: String): EditText = EditText(this).apply {
+        hint = hintText
+        inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        setSingleLine(true)
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+    }
+
+    private fun actionButton(kind: String, caption: String, primary: Boolean, action: () -> Unit): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        layoutDirection = View.LAYOUT_DIRECTION_RTL
+        background = rounded(if (primary) 0xFF3F6FD8.toInt() else 0xFF263D63.toInt(), 12)
+        isClickable = true
+        isFocusable = true
+        contentDescription = caption
+        setOnClickListener { action() }
+        addView(QamzorLineIconView(this@MainActivity, kind, 0xFFF4F7FF.toInt()),
+            LinearLayout.LayoutParams(dp(17), dp(17)).apply { marginEnd = dp(6) })
+        addView(TextView(this@MainActivity).apply {
+            text = caption
+            textSize = 12.5f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFF4F7FF.toInt())
+            maxLines = 1
         })
-        setContentView(scroll)
-        refreshSelectionSummary()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -299,41 +654,28 @@ class MainActivity : Activity() {
         cornerRadius = dp(radius).toFloat()
     }
 
-    private fun infoPanel(message: String) = TextView(this).apply {
-        text = message
-        textSize = 13f
-        setTextColor(0xFFE0E9F8.toInt())
-        setPadding(dp(13), dp(11), dp(13), dp(11))
-        background = rounded(0xFF1A2A49.toInt(), 14)
-        gravity = Gravity.CENTER_VERTICAL
-        minHeight = dp(50)
-    }
-
-    private fun sectionLabel(label: String) = TextView(this).apply {
-        text = label
-        textSize = 15f
-        setTypeface(null, android.graphics.Typeface.BOLD)
-        setTextColor(0xFFB9D0F7.toInt())
-        setPadding(dp(2), dp(12), dp(2), dp(7))
-    }
-
     private fun iconBadge(kind: String, backgroundColor: Int, tint: Int, size: Int): View = FrameLayout(this).apply {
-        background = rounded(backgroundColor, 11)
-        addView(QamzorLineIconView(this@MainActivity, kind, tint),
-            FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+        background = rounded(backgroundColor, 10)
+        val inner = dp((size * 0.55f).toInt())
+        addView(QamzorLineIconView(this@MainActivity, kind, tint), FrameLayout.LayoutParams(inner, inner, Gravity.CENTER))
         layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
     }
 
-    /** Small Lucide-inspired outline icons drawn locally; no external icon dependency. */
+    /** Small outline icons drawn locally; no external icon dependency. */
     private inner class QamzorLineIconView(context: Context, private val kind: String, tint: Int) : View(context) {
         private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = tint
             style = Paint.Style.STROKE
-            strokeWidth = 1.8f
+            strokeWidth = 1.9f
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
         private val shape = Path()
+
+        fun applyTint(color: Int) {
+            stroke.color = color
+            invalidate()
+        }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -364,6 +706,14 @@ class MainActivity : Activity() {
                     canvas.drawPath(shape, stroke)
                     canvas.drawArc(RectF(4f, 4f, 21f, 20f), 25f, 145f, false, stroke)
                     shape.reset(); shape.moveTo(20.5f, 19f); shape.lineTo(21f, 15f); shape.lineTo(17f, 16f)
+                    canvas.drawPath(shape, stroke)
+                }
+                "compare" -> {
+                    canvas.drawLine(8f, 4f, 8f, 20f, stroke)
+                    canvas.drawLine(16f, 4f, 16f, 20f, stroke)
+                    shape.reset(); shape.moveTo(4.5f, 8f); shape.lineTo(8f, 4.5f); shape.lineTo(11.5f, 8f)
+                    canvas.drawPath(shape, stroke)
+                    shape.reset(); shape.moveTo(12.5f, 16f); shape.lineTo(16f, 19.5f); shape.lineTo(19.5f, 16f)
                     canvas.drawPath(shape, stroke)
                 }
                 "shield_check" -> {
@@ -399,63 +749,41 @@ class MainActivity : Activity() {
                     canvas.drawLine(10f, 9.5f, 10.5f, 17f, stroke)
                     canvas.drawLine(14f, 9.5f, 13.5f, 17f, stroke)
                 }
+                "lock", "unlock" -> {
+                    canvas.drawRect(5f, 11f, 19f, 21f, stroke)
+                    canvas.drawArc(RectF(8f, 3f, 16f, 11f), 180f, 180f, false, stroke)
+                    canvas.drawLine(8f, 7f, 8f, 11f, stroke)
+                    if (kind == "lock") canvas.drawLine(16f, 7f, 16f, 11f, stroke)
+                    canvas.drawCircle(12f, 16f, 1.3f, stroke)
+                }
+                "plus" -> {
+                    canvas.drawLine(12f, 5f, 12f, 19f, stroke)
+                    canvas.drawLine(5f, 12f, 19f, 12f, stroke)
+                }
+                "close" -> {
+                    canvas.drawLine(6f, 6f, 18f, 18f, stroke)
+                    canvas.drawLine(18f, 6f, 6f, 18f, stroke)
+                }
+                "create" -> {
+                    canvas.drawRect(3f, 4f, 21f, 9f, stroke)
+                    canvas.drawRect(5f, 9f, 19f, 20f, stroke)
+                    canvas.drawLine(10f, 13f, 14f, 13f, stroke)
+                }
+                "tools" -> {
+                    canvas.drawRect(4f, 4f, 10f, 10f, stroke)
+                    canvas.drawRect(14f, 4f, 20f, 10f, stroke)
+                    canvas.drawRect(4f, 14f, 10f, 20f, stroke)
+                    canvas.drawRect(14f, 14f, 20f, 20f, stroke)
+                }
+                "activity" -> {
+                    shape.reset(); shape.moveTo(3f, 12f); shape.lineTo(8f, 12f); shape.lineTo(11f, 5f)
+                    shape.lineTo(14f, 19f); shape.lineTo(17f, 12f); shape.lineTo(21f, 12f)
+                    canvas.drawPath(shape, stroke)
+                }
                 else -> canvas.drawCircle(12f, 12f, 8f, stroke)
             }
             canvas.restore()
         }
-    }
-
-    private fun dashboardTile(title: String, description: String, symbol: String, action: () -> Unit): View {
-        val tile = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(9), dp(12), dp(9))
-            background = rounded(0xFF2D4B78.toInt(), 16)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { action() }
-            contentDescription = "$title. $description"
-        }
-        tile.addView(iconBadge(symbol, 0x554B73AA, 0xFFF7FAFF.toInt(), 36))
-        tile.addView(TextView(this).apply {
-            text = title
-            textSize = 15.5f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(5), 0, dp(1))
-        })
-        tile.addView(TextView(this).apply {
-            text = description
-            textSize = 11f
-            setTextColor(0xFFD0DDF1.toInt())
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        })
-        return tile
-    }
-
-    private fun addTileRow(parent: LinearLayout, first: View, second: View) {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-        }
-        row.addView(first, LinearLayout.LayoutParams(0, dp(122), 1f).apply { marginEnd = dp(6) })
-        row.addView(second, LinearLayout.LayoutParams(0, dp(122), 1f).apply { marginStart = dp(6) })
-        parent.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
-    }
-
-    private fun compactAction(symbol: String, label: String, action: () -> Unit): View = TextView(this).apply {
-        text = "$symbol  $label"
-        textSize = 12.5f
-        gravity = Gravity.CENTER
-        setTextColor(0xFFF4F7FF.toInt())
-        background = rounded(0xFF263D63.toInt(), 14)
-        isClickable = true
-        isFocusable = true
-        setOnClickListener { action() }
     }
 
     private fun metricCard(label: String, initialValue: String, valueColor: Int): Pair<View, TextView> {
@@ -542,19 +870,17 @@ class MainActivity : Activity() {
                 REQUEST_EXTRACT -> {
                     val selected = data.data ?: error("لم يتم اختيار أرشيف")
                     pendingExtractionPaths = null
-                    openedArchivePassword = null
                     status.text = "جارٍ قراءة الأرشيف المحدد..."
+                    val name = displayName(selected) ?: "archive.qzra"
                     runOnWorker("تعذرت قراءة الأرشيف") {
                         val archive = copyUriToCache(selected, "selected-archive-${System.currentTimeMillis()}.qzra")
-                        pendingExtraction = archive
-                        openedArchive = archive
                         try {
                             ArchiveEngine.browse(archive)
-                            openedArchivePassword = null
+                            installOpenedArchive(archive, name, null, emptySet())
                             runOnUiThread { requestSelectedExtraction(null) }
                         } catch (error: IllegalArgumentException) {
-                            if ((error.message.orEmpty().contains("encrypted", ignoreCase = true) && error.message.orEmpty().contains("password", ignoreCase = true)) || error.message.orEmpty().contains("QZRA 1.3", ignoreCase = true)) {
-                                runOnUiThread { promptArchivePassword(archive) { requestSelectedExtraction(null) } }
+                            if (needsArchivePassword(error)) {
+                                runOnUiThread { promptArchivePassword(archive, name) { requestSelectedExtraction(null) } }
                             } else throw error
                         }
                     }
@@ -646,34 +972,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showOperationCenter() {
-        val snapshot = synchronized(operationHistory) { operationHistory.toList().takeLast(60) }
-        val current = activeOperationLabel?.let {
-            val elapsed = activeOperationStartedAt?.let { start -> ((System.currentTimeMillis() - start) / 1000).coerceAtLeast(0) } ?: 0
-            "العملية النشطة: $it\nالمدة: ${elapsed} ثانية\n\n"
-        } ?: "لا توجد عملية نشطة الآن.\n\n"
-        val completed = snapshot.count { it.contains("اكتملت") }
-        val failed = snapshot.count { it.contains("فشلت") }
-        val interrupted = snapshot.count { it.contains("توقفت العملية") }
-        val body = current + "إجمالي السجل: ${snapshot.size} | ناجحة: $completed | فاشلة: $failed | متوقفة: $interrupted\n\n" +
-            if (snapshot.isEmpty()) "لا توجد عمليات مسجلة بعد." else snapshot.asReversed().joinToString("\n")
-        AlertDialog.Builder(this).setTitle("مركز عمليات QAMZOR")
-            .setMessage(body)
-            .setPositiveButton("تحديث") { _, _ -> showOperationCenter() }
-            .setNeutralButton("مسح السجل") { _, _ ->
-                synchronized(operationHistory) {
-                    operationHistory.clear()
-                    operationPreferences().edit().remove("events").apply()
-                }
-                showOperationCenter()
-            }
-            .setNegativeButton("إغلاق", null).show()
-    }
-
     private fun verifySelectedArchive(uri: Uri?) {
         val selected = uri ?: error("لم يتم اختيار أرشيف")
         status.text = "جارٍ فحص جميع بيانات الأرشيف والتحقق من SHA-256..."
         resetVerificationMetrics()
+        openedFolderPasswords.clear()
         runOnWorker("فشل فحص الأرشيف") {
             val archive = copyUriToCache(selected, "qamzor-verify-${System.currentTimeMillis()}.qzra")
             try {
@@ -831,105 +1134,100 @@ class MainActivity : Activity() {
         return filesCopied to bytesCopied
     }
 
+    // ───────────────────────────── Create flow: source tree, folder locks, archive creation ─────────────────────────────
+
     private fun convertSelectedToQzra() {
+        if (backgroundBusy) {
+            status.text = "هناك عملية قيد التنفيذ. انتظر حتى تنتهي."
+            return
+        }
         val sources = synchronized(selectedSources) { selectedSources.toList() }
-        require(sources.isNotEmpty()) { "أضف ملفًا واحدًا على الأقل أو مجلدًا قبل التحويل إلى QZRA" }
-        if (protectArchiveWithPassword) {
-            promptNewArchivePassword(sources)
-        } else {
+        if (sources.isEmpty()) {
+            status.text = "أضف ملفًا أو مجلدًا واحدًا على الأقل قبل إنشاء الأرشيف."
+            return
+        }
+        val root = stagingDirectory
+        val locks = LinkedHashMap<String, String>()
+        if (root != null) for ((path, secret) in folderLocks) if (File(root, path).isDirectory) locks[path] = secret
+        val protect = protectSwitch?.isChecked == true || locks.isNotEmpty()
+        if (!protect) {
             createSelectedQzra(sources, null)
+            return
+        }
+        val first = passwordField?.text?.toString().orEmpty()
+        val second = confirmField?.text?.toString().orEmpty()
+        if (protectSwitch?.isChecked != true) protectSwitch?.isChecked = true
+        when {
+            first.isEmpty() -> status.text = "أدخل كلمة مرور الأرشيف في بطاقة الحماية (مطلوبة أيضًا عند حماية مجلد)."
+            first.length < 10 -> status.text = "كلمة مرور الأرشيف قصيرة؛ استخدم 10 أحرف على الأقل."
+            first != second -> status.text = "كلمتا مرور الأرشيف غير متطابقتين."
+            else -> createSelectedQzra(sources, first, hideNamesBox?.isChecked != false || locks.isNotEmpty(), locks)
         }
     }
 
-    private fun promptNewArchivePassword(sources: List<File>) {
-        val password = EditText(this).apply {
-            hint = "كلمة المرور الرئيسية (10 أحرف على الأقل)"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        val confirm = EditText(this).apply {
-            hint = "تأكيد كلمة المرور الرئيسية"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        val scopePath = EditText(this).apply {
-            hint = "مسار مجلد للحماية المستقلة (اختياري، مثل Project/Vault)"
-            setSingleLine(true)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        val scopePassword = EditText(this).apply {
-            hint = "كلمة مرور المجلد المستقلة (اختياري)"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        val scopeConfirm = EditText(this).apply {
-            hint = "تأكيد كلمة مرور المجلد"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        val hideMetadataOption = CheckBox(this).apply {
-            text = "إخفاء أسماء الملفات والبيانات (QZRA 1.3)"
-            textSize = 12f
-            setTextColor(0xFFD8E5F8.toInt())
-            buttonTintList = ColorStateList.valueOf(0xFF8FB4F4.toInt())
-            isChecked = hideArchiveMetadata
-        }
-        val fields = LinearLayout(this).apply {
+    private fun promptFolderLock(path: String) {
+        val existing = folderLocks.containsKey(path)
+        val first = dialogField("كلمة مرور المجلد (10 أحرف على الأقل)")
+        val second = dialogField("تأكيد كلمة المرور")
+        val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(2))
-            addView(password); addView(confirm)
-            addView(hideMetadataOption)
-            addView(TextView(this@MainActivity).apply {
-                text = "لحماية مجلد مستقل، أدخل مساره كما سيظهر داخل الأرشيف وكلمة مرور مختلفة عنه."
-                textSize = 11f; setTextColor(0xFF9FB4D3.toInt()); setPadding(0, dp(8), 0, dp(2))
-            })
-            addView(scopePath); addView(scopePassword); addView(scopeConfirm)
+            addView(first); addView(second)
         }
-        AlertDialog.Builder(this)
-            .setTitle("حماية أرشيف QZRA")
-            .setMessage("تشفير AES-256-GCM. عند تفعيل QZRA 1.3 تُخفى أسماء ومسارات الملفات وأحجامها داخل Manifest مشفّر. كلمات المرور لا تُحفظ؛ احتفظ بها منفصلة.")
-            .setView(fields)
-            .setPositiveButton("إنشاء أرشيف محمي") { _, _ ->
-                val first = password.text.toString()
-                val second = confirm.text.toString()
-                val path = scopePath.text.toString().trim().trim('/')
-                val folderFirst = scopePassword.text.toString()
-                val folderSecond = scopeConfirm.text.toString()
+        val builder = AlertDialog.Builder(this)
+            .setTitle("كلمة مرور المجلد: ${path.substringAfterLast('/')}")
+            .setMessage("كلمة مرور مستقلة لهذا المجلد فقط. لا يمكن قراءة ملفاته أو فحصها أو استخراجها بدونها، حتى مع كلمة مرور الأرشيف.")
+            .setView(panel)
+            .setPositiveButton("حماية المجلد") { _, _ ->
+                val value = first.text.toString()
+                val confirmation = second.text.toString()
+                first.text?.clear(); second.text?.clear()
                 when {
-                    first.length < 10 -> status.text = "كلمة المرور الرئيسية قصيرة؛ استخدم 10 أحرف على الأقل."
-                    first != second -> status.text = "كلمتا المرور الرئيسيتان غير متطابقتين."
-                    path.isNotEmpty() && (folderFirst.length < 10 || folderFirst != folderSecond) -> status.text = "أدخل كلمة مرور مستقلة للمجلد من 10 أحرف على الأقل وأكدها بشكل صحيح."
-                    path.isEmpty() && (folderFirst.isNotEmpty() || folderSecond.isNotEmpty()) -> status.text = "أدخل مسار المجلد المحمي أيضًا."
-                    else -> createSelectedQzra(sources, first, hideMetadataOption.isChecked, if (path.isNotEmpty()) mapOf(path to folderFirst) else emptyMap())
+                    value.length < 10 -> { status.text = "كلمة مرور المجلد قصيرة؛ استخدم 10 أحرف على الأقل."; promptFolderLock(path) }
+                    value != confirmation -> { status.text = "كلمتا مرور المجلد غير متطابقتين."; promptFolderLock(path) }
+                    !existing && folderLocks.size >= 32 -> { status.text = "الحد الأقصى 32 مجلدًا محميًا بكلمة مرور مستقلة في الأرشيف الواحد." }
+                    else -> {
+                        folderLocks[path] = value
+                        if (protectSwitch?.isChecked != true) protectSwitch?.isChecked = true
+                        status.text = "تم تعيين كلمة مرور مستقلة للمجلد: $path\nأدخل كلمة مرور الأرشيف ثم اضغط «إنشاء أرشيف QZRA»."
+                        refreshSelectionSummary()
+                    }
                 }
-                password.text?.clear(); confirm.text?.clear()
-                scopePassword.text?.clear(); scopeConfirm.text?.clear()
             }
             .setNegativeButton("إلغاء", null)
-            .show()
+        if (existing) {
+            builder.setNeutralButton("إزالة الحماية") { _, _ ->
+                folderLocks.remove(path)
+                status.text = "تمت إزالة حماية المجلد: $path"
+                refreshSelectionSummary()
+            }
+        }
+        builder.show()
     }
 
     private fun createSelectedQzra(
         sources: List<File>, password: String?, encryptMetadata: Boolean = false,
         folderPasswords: Map<String, String> = emptyMap()
     ) {
-        status.text = "جارٍ تحويل ${sources.size} مصدر إلى حاوية QZRA${if (password == null) "" else if (encryptMetadata || folderPasswords.isNotEmpty()) " 1.3 مشفّرة بالكامل" else " مشفّرة"}..."
+        status.text = "جارٍ إنشاء أرشيف QZRA${if (password == null) "" else " مشفّر"}..."
         resetVerificationMetrics()
-        runOnWorker("فشل تحويل العناصر إلى QZRA") {
+        runOnWorker("فشل إنشاء أرشيف QZRA") {
             val output = File(cacheDir, "QAMZOR-${System.currentTimeMillis()}.qzra")
             val result = ArchiveEngine.convertToQzra(
                 output, sources, password = password, encryptMetadata = encryptMetadata,
                 folderPasswords = folderPasswords
             )
             val verified = ArchiveEngine.verify(output, password, folderPasswords)
-            require(verified.valid && verified.filesChecked == result.files) { "تعذر التحقق من الأرشيف بعد التحويل" }
+            require(verified.valid && verified.filesChecked == result.files) { "تعذر التحقق من الأرشيف بعد الإنشاء" }
             val archiveEntries = ArchiveEngine.list(output, password, folderPasswords)
             require(archiveEntries.size == result.entries) { "عدد عناصر الأرشيف الناتج لا يطابق المصادر" }
             pendingArchive = output
             runOnUiThread {
-                openedFolderPasswords.clear(); openedFolderPasswords.putAll(folderPasswords)
                 refreshVerificationMetrics(verified.valid, verified.filesChecked, verified.bytesChecked)
-                status.text = "اكتمل التحويل والتحقق ✓\nالإصدار: ${verified.version} • العناصر: ${result.entries} • الملفات: ${result.files} • الحجم: ${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}. اختر مكان حفظ ملف .qzra."
+                val protectedCount = folderPasswords.size
+                status.text = "اكتمل الإنشاء والتحقق ✓ (${verified.version}) • الملفات: ${result.files} • " +
+                    "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
+                    (if (protectedCount > 0) " • مجلدات محمية: $protectedCount" else "") + "\nاختر مكان حفظ ملف .qzra."
                 val save = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE); type = "application/octet-stream"
                     putExtra(Intent.EXTRA_TITLE, output.name)
@@ -937,6 +1235,15 @@ class MainActivity : Activity() {
                 startActivityForResult(save, REQUEST_SAVE_ARCHIVE)
             }
         }
+    }
+
+    private fun resetProtectionUi() {
+        folderLocks.clear()
+        expandedDirs.clear()
+        passwordField?.text?.clear()
+        confirmField?.text?.clear()
+        protectSwitch?.isChecked = false
+        hideNamesBox?.isChecked = true
     }
 
     private fun clearSelection() {
@@ -947,131 +1254,162 @@ class MainActivity : Activity() {
         synchronized(selectedSources) { selectedSources.clear() }
         stagingDirectory?.deleteRecursively()
         stagingDirectory = null
+        folderLocks.clear()
+        expandedDirs.clear()
         refreshSelectionSummary()
         status.text = "تم مسح قائمة الملفات والمجلدات."
     }
 
+    private fun removeSource(source: File, relative: String) {
+        if (backgroundBusy) {
+            status.text = "هناك عملية ملفات قيد التنفيذ. حاول بعد انتهائها."
+            return
+        }
+        synchronized(selectedSources) { selectedSources.remove(source) }
+        source.deleteRecursively()
+        for (key in folderLocks.keys.toList()) if (key == relative || key.startsWith("$relative/")) folderLocks.remove(key)
+        for (key in expandedDirs.toList()) if (key == relative || key.startsWith("$relative/")) expandedDirs.remove(key)
+        refreshSelectionSummary()
+        status.text = "تمت إزالة ${source.name} من قائمة الأرشفة."
+    }
+
     private fun refreshSelectionSummary() {
         val sources = synchronized(selectedSources) { selectedSources.toList() }
+        val root = stagingDirectory
         runOnUiThread {
             sourcesListContainer.removeAllViews()
-            if (sources.isEmpty()) {
-                sourcesListContainer.addView(TextView(this).apply {
-                    text = "لم تتم إضافة ملفات أو مجلدات بعد. أضف مصادر لتحويلها إلى أرشيف واحد."
-                    textSize = 12f
-                    setTextColor(0xFF9FB4D3.toInt())
-                    setPadding(dp(4), dp(9), dp(4), dp(9))
-                })
+            if (sources.isEmpty() || root == null) {
+                sourcesListContainer.addView(label("لم تتم إضافة ملفات أو مجلدات بعد.", 12f, 0xFF9FB4D3.toInt(), false)
+                    .apply { setPadding(dp(4), dp(8), dp(4), dp(8)) })
             } else {
-                sources.forEach { source ->
-                    val row = LinearLayout(this).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        layoutDirection = View.LAYOUT_DIRECTION_RTL
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(dp(8), dp(6), dp(8), dp(6))
-                        background = rounded(0xFF1D3152.toInt(), 12)
-                    }
-                    row.addView(
-                        iconBadge(if (source.isDirectory) "folder" else "file", 0x334B73AA, 0xFFBBD2FF.toInt(), 36),
-                        LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginEnd = dp(8) }
-                    )
-                    val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
-                    labels.addView(TextView(this).apply {
-                        text = source.name
-                        textSize = 12.5f
-                        setTypeface(null, android.graphics.Typeface.BOLD)
-                        setTextColor(0xFFF4F7FF.toInt())
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.END
-                        setSingleLine(true)
-                    })
-                    labels.addView(TextView(this).apply {
-                        text = if (source.isDirectory) "مجلد كامل • ${source.list()?.size ?: 0} عناصر مباشرة"
-                        else "ملف • ${formatBytes(source.length())}"
-                        textSize = 10f
-                        setTextColor(0xFF9FB4D3.toInt())
-                        maxLines = 1
-                    })
-                    row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
-                    val remove = iconBadge("trash", 0x334E2937, 0xFFFFB6B6.toInt(), 34).apply {
-                        isClickable = true
-                        isFocusable = true
-                        contentDescription = "حذف ${source.name} من قائمة التحويل"
-                        setOnClickListener {
-                            if (backgroundBusy) {
-                                status.text = "هناك عملية ملفات قيد التنفيذ. حاول بعد انتهائها."
-                            } else {
-                                synchronized(selectedSources) { selectedSources.remove(source) }
-                                source.deleteRecursively()
-                                refreshSelectionSummary()
-                                status.text = "تمت إزالة ${source.name} من مصادر التحويل."
-                            }
-                        }
-                    }
-                    row.addView(remove, LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginStart = dp(6) })
-                    sourcesListContainer.addView(row, LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(6) })
-                }
+                for (source in sources) addSourceRows(source, root, 0)
             }
         }
     }
 
+    private fun addSourceRows(file: File, root: File, depth: Int) {
+        val relative = file.relativeTo(root).invariantSeparatorsPath
+        val isDirectory = file.isDirectory
+        val locked = isDirectory && folderLocks.containsKey(relative)
+        val expanded = isDirectory && expandedDirs.contains(relative)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+            setPaddingRelative(dp(8) + depth * dp(14), dp(3), dp(8), dp(3))
+            background = rounded(if (depth == 0) 0xFF1D3152.toInt() else 0xFF182845.toInt(), 10)
+            if (isDirectory) {
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (expanded) expandedDirs.remove(relative) else expandedDirs.add(relative)
+                    refreshSelectionSummary()
+                }
+            }
+        }
+        row.addView(QamzorLineIconView(this, if (isDirectory) "folder" else "file", 0xFFBBD2FF.toInt()),
+            LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(8) })
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(label(file.name, 12.5f, 0xFFF4F7FF.toInt(), true).apply {
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setSingleLine(true)
+        })
+        texts.addView(label(
+            when {
+                locked -> "محمي بكلمة مرور مستقلة"
+                isDirectory -> "مجلد • ${file.list()?.size ?: 0} عناصر مباشرة"
+                else -> "ملف • ${formatBytes(file.length())}"
+            }, 10f, if (locked) 0xFFFFD27A.toInt() else 0xFF9FB4D3.toInt(), false).apply { maxLines = 1 })
+        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        if (isDirectory) {
+            val lockButton = iconBadge(if (locked) "lock" else "unlock", if (locked) 0x44FFD27A else 0x334B73AA,
+                if (locked) 0xFFFFD27A.toInt() else 0xFFBBD2FF.toInt(), 32).apply {
+                isClickable = true
+                isFocusable = true
+                contentDescription = "كلمة مرور مستقلة للمجلد ${file.name}"
+                setOnClickListener { promptFolderLock(relative) }
+            }
+            row.addView(lockButton, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(4) })
+        }
+        if (depth == 0) {
+            val remove = iconBadge("trash", 0x334E2937, 0xFFFFB6B6.toInt(), 32).apply {
+                isClickable = true
+                isFocusable = true
+                contentDescription = "حذف ${file.name} من القائمة"
+                setOnClickListener { removeSource(file, relative) }
+            }
+            row.addView(remove, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(4) })
+        }
+        sourcesListContainer.addView(row, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(5) })
+        if (expanded) {
+            val children = file.listFiles()
+                ?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) }))
+                ?.take(300).orEmpty()
+            for (child in children) addSourceRows(child, root, depth + 1)
+        }
+    }
+
+    // ───────────────────────────── Open flow ─────────────────────────────
+
     private fun browseSelectedArchive(uri: Uri?) {
-        val selected = uri ?: error("لم يتم اختيار أرشيف")
-        status.text = "جارٍ فتح فهرس أرشيف QZRA..."
+        val selected = uri
+        if (selected == null) {
+            status.text = "لم يتم اختيار أرشيف."
+            return
+        }
+        status.text = "جارٍ فتح أرشيف QZRA..."
+        val name = displayName(selected) ?: "archive.qzra"
         runOnWorker("تعذر فتح الأرشيف") {
             val archive = copyUriToCache(selected, "qamzor-opened-${System.currentTimeMillis()}.qzra")
             try {
-                // Opening the virtual explorer reads and validates the manifest only.
-                // Payload integrity is checked when a file is previewed or extracted.
+                // The manifest is validated here; payload integrity is checked on preview/extract/verify.
                 ArchiveEngine.browse(archive)
-                openedArchive = archive
-                openedArchivePassword = null
-                openedFolderPasswords.clear()
-                pendingExtraction = archive
+                installOpenedArchive(archive, name, null, emptySet())
                 runOnUiThread {
-                    status.text = "تم فتح الأرشيف. تتم قراءة الملفات من داخله دون فك الأرشيف بالكامل."
+                    status.text = "تم فتح الأرشيف. تُقرأ الملفات من داخله دون فكّه بالكامل."
+                    selectTab(1)
                     showVirtualExplorer("")
                 }
             } catch (error: IllegalArgumentException) {
-                if ((error.message.orEmpty().contains("encrypted", ignoreCase = true) && error.message.orEmpty().contains("password", ignoreCase = true)) || error.message.orEmpty().contains("QZRA 1.3", ignoreCase = true)) {
-                    runOnUiThread { promptArchivePassword(archive) }
+                if (needsArchivePassword(error)) {
+                    runOnUiThread { selectTab(1); promptArchivePassword(archive, name) }
                 } else throw error
             }
         }
     }
 
-    private fun promptArchivePassword(archive: File, afterAuthenticated: (() -> Unit)? = null) {
-        val passwordField = EditText(this).apply {
-            hint = "كلمة مرور الأرشيف"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setPadding(24, 18, 24, 18)
+    private fun promptArchivePassword(archive: File, name: String, afterAuthenticated: (() -> Unit)? = null) {
+        val passwordField = dialogField("كلمة مرور الأرشيف")
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(2))
+            addView(passwordField)
         }
         AlertDialog.Builder(this)
             .setTitle("أرشيف QZRA مشفّر")
-            .setMessage("أدخل كلمة المرور لفك مصادقة الفهرس وقراءة الملفات بأمان.")
-            .setView(passwordField)
+            .setMessage("أدخل كلمة مرور الأرشيف لفتح الفهرس وعرض الأسماء.")
+            .setView(panel)
             .setPositiveButton("فتح الأرشيف") { _, _ ->
                 val password = passwordField.text.toString()
+                passwordField.text?.clear()
                 if (password.isEmpty()) {
                     status.text = "يجب إدخال كلمة المرور للأرشيف المشفّر."
                 } else {
                     runOnWorker("تعذر فتح الأرشيف المشفّر") {
                         try {
                             ArchiveEngine.browse(archive, "", password)
-                            openedArchive = archive
-                            openedArchivePassword = password
-                            openedFolderPasswords.clear()
-                            pendingExtraction = archive
+                            val protectedPaths = ArchiveEngine.protectedFolders(archive, password).toSet()
+                            installOpenedArchive(archive, name, password, protectedPaths)
                             runOnUiThread {
-                                status.text = "تمت مصادقة الأرشيف المشفّر بنجاح ✓"
-                                if (afterAuthenticated != null) afterAuthenticated() else showVirtualExplorer("")
+                                status.text = "تمت مصادقة الأرشيف المشفّر ✓" +
+                                    if (protectedPaths.isEmpty()) "" else " • مجلدات محمية: ${protectedPaths.size}"
+                                if (afterAuthenticated != null) afterAuthenticated() else { selectTab(1); showVirtualExplorer("") }
                             }
                         } catch (error: Exception) {
                             runOnUiThread {
                                 AlertDialog.Builder(this)
                                     .setTitle("تعذر فتح الأرشيف")
                                     .setMessage(error.message ?: "كلمة المرور غير صحيحة أو الأرشيف تالف")
-                                    .setPositiveButton("إعادة المحاولة") { _, _ -> promptArchivePassword(archive, afterAuthenticated) }
+                                    .setPositiveButton("إعادة المحاولة") { _, _ -> promptArchivePassword(archive, name, afterAuthenticated) }
                                     .setNegativeButton("إغلاق", null)
                                     .show()
                             }
@@ -1081,93 +1419,6 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("إلغاء", null)
             .show()
-    }
-
-    private fun showVirtualExplorer(path: String) {
-        val archive = openedArchive ?: return
-        runOnWorker("تعذر قراءة مجلد الأرشيف") {
-            val children = ArchiveEngine.browse(archive, path, openedArchivePassword)
-            runOnUiThread {
-                val container = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(12, 8, 12, 8)
-                }
-                val breadcrumb = TextView(this).apply {
-                    text = if (path.isBlank()) "المسار: /" else "المسار: /$path/"
-                    textSize = 14f
-                    setTextColor(0xFF2455A4.toInt())
-                    setPadding(8, 8, 8, 12)
-                }
-                container.addView(breadcrumb)
-                val summary = TextView(this).apply {
-                    text = "${children.size} عنصر في هذا المجلد\nالملفات تُقرأ مباشرة من كتل الأرشيف، ولا تُفك إلى مجلد خارجي عند معاينتها."
-                    textSize = 12f
-                    setTextColor(0xFF526078.toInt())
-                    setPadding(8, 4, 8, 12)
-                }
-                container.addView(summary)
-                if (path.isNotBlank()) {
-                    val up = Button(this).apply {
-                        text = "⬆ المجلد السابق"
-                        isAllCaps = false
-                        setOnClickListener {
-                            explorerDialog?.dismiss()
-                            showVirtualExplorer(path.substringBeforeLast('/', ""))
-                        }
-                    }
-                    container.addView(up)
-                }
-                if (children.isEmpty()) {
-                    container.addView(TextView(this).apply {
-                        text = "هذا المجلد فارغ."
-                        textSize = 15f
-                        setPadding(18, 24, 18, 24)
-                    })
-                }
-                for (item in children) {
-                    val row = TextView(this).apply {
-                        text = (if (item.type == "directory") "📁  " else "📄  ") + item.name +
-                            if (item.type == "directory") "  ›" else "\n${formatBytes(item.size)}"
-                        textSize = 15f
-                        setTextColor(0xFF202A3A.toInt())
-                        setPadding(16, 14, 16, 14)
-                        setBackgroundColor(0xFFFFFFFF.toInt())
-                        isClickable = true
-                        isFocusable = true
-                        setOnClickListener {
-                            if (item.type == "directory") {
-                                explorerDialog?.dismiss()
-                                showVirtualExplorer(item.path)
-                            } else showFileActions(item.path, item.size)
-                        }
-                        setOnLongClickListener {
-                            if (item.type == "directory") {
-                                AlertDialog.Builder(this@MainActivity)
-                                    .setTitle(item.name)
-                                    .setItems(arrayOf("فتح المجلد", "استخراج هذا المجلد فقط")) { _, which ->
-                                        if (which == 0) {
-                                            explorerDialog?.dismiss()
-                                            showVirtualExplorer(item.path)
-                                        } else requestSelectedExtraction(item.path)
-                                    }.show()
-                            } else showFileActions(item.path, item.size)
-                            true
-                        }
-                    }
-                    container.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 5 })
-                }
-                val scroll = ScrollView(this).apply { addView(container) }
-                val dialog = AlertDialog.Builder(this)
-                    .setTitle("مستكشف QZRA الافتراضي")
-                    .setView(scroll)
-                    .setPositiveButton("إغلاق", null)
-                    .setNeutralButton("استخراج الكل") { _, _ -> requestSelectedExtraction(null) }
-                    .create()
-                explorerDialog = dialog
-                dialog.setOnDismissListener { if (explorerDialog === dialog) explorerDialog = null }
-                dialog.show()
-            }
-        }
     }
 
     private fun showFileActions(path: String, size: Long) {
@@ -1332,13 +1583,11 @@ class MainActivity : Activity() {
             runOnUiThread {
                 status.text = "تم حفظ الأرشيف بنجاح: ${archive.name}\nيمكنك الآن فحصه أو مشاركته."
                 pendingArchive = null
+                try { archive.delete() } catch (_: Exception) { /* best effort */ }
                 synchronized(selectedSources) { selectedSources.clear() }
                 stagingDirectory?.deleteRecursively()
                 stagingDirectory = null
-                protectArchiveWithPassword = false
-                hideArchiveMetadata = false
-                protectArchiveCheckBox?.isChecked = false
-                hideMetadataCheckBox?.isChecked = false
+                resetProtectionUi()
                 refreshSelectionSummary()
             }
         }
@@ -1534,6 +1783,10 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private val COLOR_BG = 0xFF0B1730.toInt()
+        private val COLOR_BAR = 0xFF101D36.toInt()
+        private val NAV_IDLE = 0xFF8FA4C8.toInt()
+        private val TAB_TITLES = listOf("إنشاء أرشيف جديد", "فتح وتصفح أرشيف", "الأدوات", "سجل العمليات")
         private val TEXT_EXTENSIONS = setOf("txt", "md", "csv", "tsv", "json", "xml", "html", "htm", "css", "js", "ts", "py", "kt", "java", "yaml", "yml", "toml", "ini", "properties", "sh", "sql", "log")
         private const val REQUEST_FILES = 20
         private const val REQUEST_FOLDER = 21

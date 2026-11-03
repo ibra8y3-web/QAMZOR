@@ -26,6 +26,7 @@ class ArchiveEngineTest {
             assertEquals(5, result.entries)
             assertEquals(2, result.files)
             assertTrue(ArchiveEngine.verify(archive).valid)
+            assertTrue(ArchiveEngine.protectedFolders(archive).isEmpty())
             assertEquals(setOf("notes.txt", "Project Folder"), ArchiveEngine.browse(archive).map { it.name }.toSet())
             assertEquals("native QZRA conversion\n", ArchiveEngine.preview(archive, "notes.txt").data.toString(Charsets.UTF_8))
             assertTrue(ArchiveEngine.list(archive).any { it.path == "Project Folder/empty/nested" && it.type == "directory" })
@@ -335,6 +336,7 @@ class ArchiveEngineTest {
             val master = "QAMZOR-v1.3-fixture-master"
             val entries = ArchiveEngine.list(archive, master)
             assertTrue(entries.any { it.path == "FixtureProject/README.txt" })
+            assertEquals(listOf("FixtureProject/Vault"), ArchiveEngine.protectedFolders(archive, master))
             assertFailsWith<IllegalStateException> { ArchiveEngine.verify(archive, master) }
             val folderPath = "FixtureProject/Vault"
             val folderPassword = "QAMZOR-v1.3-fixture-vault"

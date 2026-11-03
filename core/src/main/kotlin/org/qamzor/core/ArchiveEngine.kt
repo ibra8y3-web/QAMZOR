@@ -289,6 +289,18 @@ object ArchiveEngine {
     @JvmOverloads
     fun list(archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<EntryInfo> = readManifest(archive, password, folderPasswords).second.entries.map { EntryInfo(it.path, it.type, it.size) }
 
+    /**
+     * Archive-relative paths of folders that have their own independent password (QZRA 1.3).
+     * Needs only the archive master password; no folder password is required or checked here.
+     * Archives older than 1.3 have no protected folders and return an empty list.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun protectedFolders(archive: File, password: String? = null): List<String> {
+        val (_, manifest, _, _) = readManifest(archive, password)
+        return manifest.security?.scopes?.map { it.path }?.sorted() ?: emptyList()
+    }
+
     /** List only the immediate children of a virtual directory inside the archive.
      * No payload data is expanded or written to disk. Implicit parent directories
      * are synthesized for archives that contain a child path without an explicit

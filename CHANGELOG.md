@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0-dev — Android UI rework and folder-password UX (2026-11-04)
+
+- Android: new layout with a compact bottom navigation bar (Create / Open / Tools / Operations), smaller icons and one persistent status line; the old dashboard grid and dialog-based explorer are gone.
+- Android: archive protection is one switch with inline password fields; hiding file names is on by default (QZRA 1.3).
+- Android: tap the lock icon next to any folder in the selection tree to give that folder its own password (up to 32). Creating no longer fails with an uncaught exception when nothing is selected.
+- Android: the archive explorer lives in the Open page; protected folders show a lock and ask for their own password when entered. Master password shows names; folder password is needed to read, verify or extract.
+- Android: `.qzra` files open directly in QAMZOR from file managers (VIEW intent). Plain-text working copies in the app cache are deleted after saving, on closing an archive, and at next launch.
+- Core: `ArchiveEngine.protectedFolders(archive, masterPassword)` lists folders that have an independent password.
+- Not built or run in this workspace: Kotlin/Gradle compile, JUnit and APK must be verified by GitHub Actions.
+
+
 ## 0.7.2-dev — CI failure corrections — 2026-11-03
 
 - Fixed Android operation-history restoration by materializing the filtered `Sequence` before applying `takeLast(100)`.
