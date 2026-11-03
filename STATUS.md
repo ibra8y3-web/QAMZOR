@@ -102,7 +102,9 @@ This file is the source of truth for implementation progress. A feature is marke
 
 ## Evidence from the 2026-11-03 local execution
 
-- `PYTHONPATH=src python -m unittest discover -s tests -v` — **58 Python tests passed**; includes format, chunking, scheduling, encryption, signature, recovery, repository and mutation-smoke tests. Kotlin JUnit tests are authored separately and have not yet run via Gradle.
+- `python -m pip install --no-build-isolation -e ".[crypto]"` — editable installation of the local `qamzor` package passed in the available Python 3.13 environment.
+- `env -u PYTHONPATH python -m unittest discover -s tests -v` — **58 Python tests passed** after installation, demonstrating that the suite no longer relies on a manually set `PYTHONPATH`; includes format, chunking, scheduling, encryption, signature, recovery, repository and mutation-smoke tests. Kotlin JUnit tests are authored separately and have not yet run via Gradle.
+- `qz --help` — installed console entry point passed.
 - `PYTHONPATH=src python tools/fuzz_qzra.py --iterations 2000 --output benchmark-results/fuzz-smoke-2026-11-03.json` — **2,000 deterministic mutations; 1,999 rejected; 1 still verified; 0 unexpected exceptions**. This is not coverage-guided fuzzing.
 - `python -m compileall -q src tests tools` — passed.
 - `PYTHONPATH=src python -m qamzor.cli --help` — passed.
@@ -117,3 +119,15 @@ This file is the source of truth for implementation progress. A feature is marke
 ## Completion policy
 
 Do not mark a phase complete from a roadmap entry, placeholder, mock, or unexecuted build. External services, toolchains and devices must be explicitly identified as blockers until their results are available.
+
+
+## CI repair — 2026-11-03
+
+**Status: WORKFLOW CONFIGURATION PATCHED; REMOTE GITHUB RUN PENDING.**
+
+- [x] Python workflow installs the local `src/` package in editable mode using `python -m pip install -e ".[crypto]"` before `unittest` discovery.
+- [x] Python workflow checks the installed console script with `qz --help` rather than relying on a separate `PYTHONPATH` override.
+- [x] Android setup skips the setup action's automatic license prompt, then explicitly accepts SDK licenses and installs `platform-tools`, `platforms;android-35` and `build-tools;35.0.0`.
+- [x] Updated checkout/setup-python/setup-java/setup-android/setup-gradle/upload-artifact actions to Node 24-compatible major versions to address the deprecation warnings in the diagnostic log.
+- [x] Local editable install, full test discovery without `PYTHONPATH`, CLI entry point and Python compile checks pass.
+- [ ] GitHub-hosted Python matrix and Android Gradle workflow have not been rerun from this environment; remote success is not yet confirmed.

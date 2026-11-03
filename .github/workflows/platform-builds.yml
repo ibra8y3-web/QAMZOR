@@ -17,18 +17,18 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.9'
       - name: Run Kotlin core and SDK tests; package desktop distribution
         run: gradle --no-daemon :core:test :sdk:test :desktopApp:installDist
       - name: Upload desktop distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qamzor-desktop-${{ matrix.os }}
           path: desktopApp/build/install/desktopApp/
@@ -38,21 +38,61 @@ jobs:
     name: Android assemble and unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
+      # Install command-line tools without letting the setup action perform an
+      # interactive license step. We accept licenses explicitly below so the
+      # runner cannot stop here with "licenses not accepted".
+      - uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+          packages: ''
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          python - <<'PY_LICENSES'
+          import subprocess
+          result = subprocess.run(
+              ["sdkmanager", "--licenses"],
+              input=("y\n" * 100).encode("ascii"),
+              check=False,
+          )
+          raise SystemExit(result.returncode)
+          PY_LICENSES
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.9'
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        shell: bash
+        run: |
+          python - <<'PY_SDK'
+          import subprocess
+          result = subprocess.run(
+              [
+                  "sdkmanager", "--install",
+                  "platform-tools", "platforms;android-35", "build-tools;35.0.0",
+              ],
+              input=("y\n" * 100).encode("ascii"),
+              check=False,
+          )
+          raise SystemExit(result.returncode)
+          PY_SDK
+          python - <<'PY_LICENSES'
+          import subprocess
+          result = subprocess.run(
+              ["sdkmanager", "--licenses"],
+              input=("y\n" * 100).encode("ascii"),
+              check=False,
+          )
+          raise SystemExit(result.returncode)
+          PY_LICENSES
       - name: Build debug APK and run unit tests
         run: gradle --no-daemon :androidApp:assembleDebug :androidApp:testDebugUnitTest
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qamzor-android-debug-apk
           path: androidApp/build/outputs/apk/debug/*.apk

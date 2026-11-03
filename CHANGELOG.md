@@ -40,3 +40,12 @@
 - Added a pre-1.0 Kotlin SDK facade and usage documentation.
 - Added GitHub Actions configuration for Android debug APK build/tests and three-OS desktop distributions.
 - These client projects are initial source implementations; Gradle builds, GitHub CI results and device/OS qualification remain pending.
+
+
+## Unreleased — GitHub Actions CI repairs
+
+- Fixed Python CI package discovery by installing the local `src/` project in editable mode with the `crypto` optional dependency before running tests.
+- Changed CLI validation to call the installed `qz` entry point.
+- Changed Android SDK setup to accept licenses explicitly and install pinned SDK packages after setup, avoiding the previous setup-action license failure.
+- Updated checkout, setup-python, setup-java, setup-android, setup-gradle and upload-artifact to Node 24-compatible action majors.
+- Verified editable installation, 58 Python tests without `PYTHONPATH`, the installed CLI and Python compilation locally; remote GitHub Actions must still be rerun.
