@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.graphics.drawable.GradientDrawable
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import android.content.Intent
@@ -13,6 +14,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.EditText
@@ -47,75 +49,184 @@ class MainActivity : Activity() {
     }
 
     private fun buildInterface() {
+        window.statusBarColor = 0xFF101D36.toInt()
+        window.navigationBarColor = 0xFF101D36.toInt()
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = 0
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
-            setBackgroundColor(0xFFF4F7FB.toInt())
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(18), dp(18), dp(18), dp(24))
+            background = rounded(0xFF0B1730.toInt(), 0)
         }
-        val title = TextView(this).apply {
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+            setBackgroundColor(0xFF0B1730.toInt())
+            addView(root)
+        }
+
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(8), dp(4), dp(18))
+        }
+        val mark = TextView(this).apply {
+            text = "▣"
+            textSize = 28f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFBBD2FF.toInt())
+            background = rounded(0xFF263F70.toInt(), 18)
+            layoutParams = LinearLayout.LayoutParams(dp(58), dp(58))
+        }
+        val brandText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
+        brandText.addView(TextView(this).apply {
             text = "QAMZOR"
-            textSize = 32f
-            setTextColor(0xFF172B4D.toInt())
-            gravity = Gravity.CENTER
-            setPadding(0, 14, 0, 4)
-        }
-        val subtitle = TextView(this).apply {
-            text = "تحويل الملفات وقراءة وإدارة أرشيفات QZRA"
-            textSize = 17f
-            gravity = Gravity.CENTER
-            setTextColor(0xFF526078.toInt())
-            setPadding(0, 0, 0, 18)
-        }
-        selectionSummary = TextView(this).apply {
-            text = "لم تتم إضافة ملفات أو مجلدات بعد.\nاختر عناصر متعددة ثم حوّلها إلى حاوية QZRA واحدة."
-            textSize = 14f
-            setTextColor(0xFF25324A.toInt())
-            setPadding(14, 14, 14, 14)
-            setBackgroundColor(0xFFFFFFFF.toInt())
-        }
-        status = TextView(this).apply {
-            text = "جاهز. اختر عملية من الأدوات التالية."
-            textSize = 14f
-            setTextColor(0xFF25324A.toInt())
-            setPadding(14, 14, 14, 14)
-            setBackgroundColor(0xFFFFFFFF.toInt())
-        }
-
-        root.addView(title)
-        root.addView(subtitle)
-        root.addView(sectionLabel("تحويل الملفات والمجلدات إلى صيغة QZRA"))
-        root.addView(TextView(this).apply {
-            text = "QZRA هي حاوية أرشيف QAMZOR الأصلية: تجمع ملفاتك داخل ملف .qzra مع الحفاظ على محتواها وامتداداتها ومجلداتها. لا تغيّر نوع الملف نفسه، ولا تحذف أو تعدّل ملفاتك الأصلية."
-            textSize = 13f
-            setTextColor(0xFF526078.toInt())
-            setPadding(8, 4, 8, 10)
+            textSize = 29f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFF7FAFF.toInt())
         })
-        root.addView(actionButton("إضافة ملفات", "اختيار ملف واحد أو عدة ملفات") { pickFiles() })
-        root.addView(actionButton("إضافة مجلد كامل", "اختيار مجلد وقراءة جميع المجلدات الفرعية والملفات بداخله") { pickFolder() })
-        root.addView(selectionSummary, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 10 })
-        root.addView(actionButton("تحويل المحدد إلى صيغة البرنامج QZRA", "تجميع الملفات والمجلدات في ملف .qzra مع الحفاظ على البيانات والمسارات") { convertSelectedToQzra() })
-        root.addView(actionButton("مسح قائمة الاختيار", "إزالة الملفات والمجلدات المضافة قبل الإنشاء") { clearSelection() })
+        brandText.addView(TextView(this).apply {
+            text = "THE NEXT ARCHIVE EXPERIENCE"
+            textSize = 10f
+            setTextColor(0xFF9FB5D9.toInt())
+            letterSpacing = .08f
+        })
+        brand.addView(mark)
+        brand.addView(brandText, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(brand)
 
-        root.addView(sectionLabel("قراءة الأرشيف واستخراج محتوياته"))
-        root.addView(actionButton("استعراض الأرشيف وفحصه", "عرض الملفات والمجلدات الموجودة داخله والتحقق من السلامة") { pickArchive(REQUEST_BROWSE) })
-        root.addView(actionButton("استخراج الأرشيف بالكامل", "استخراج كل الملفات والمجلدات إلى مجلد تختاره") { pickArchive(REQUEST_EXTRACT) })
-        root.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 })
-        setContentView(ScrollView(this).apply { isFillViewport = true; addView(root) })
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(22))
+            background = rounded(0xFF1C2D50.toInt(), 26)
+        }
+        hero.addView(TextView(this).apply {
+            text = "مساحة الأرشيف الذكية"
+            textSize = 14f
+            setTextColor(0xFFB7C9E8.toInt())
+        })
+        hero.addView(TextView(this).apply {
+            text = "إدارة ملفاتك بذكاء"
+            textSize = 27f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, dp(8), 0, dp(5))
+        })
+        hero.addView(TextView(this).apply {
+            text = "إنشاء وفحص واستعراض وتحويل أرشيفات QZRA من مكان واحد."
+            textSize = 15f
+            setTextColor(0xFFD4E0F5.toInt())
+        })
+        root.addView(hero, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(20) })
+
+        root.addView(sectionLabel("الأدوات الرئيسية"))
+        addTileRow(root,
+            dashboardTile("اختيار ملفات", "إضافة ملفات إلى الأرشيف", "＋", 0xFF31588F) { pickFiles() },
+            dashboardTile("استعراض الأرشيف", "تصفح المحتويات داخليًا", "⌕", 0xFF31588F) { pickArchive(REQUEST_BROWSE) })
+        addTileRow(root,
+            dashboardTile("تحويل إلى QZRA", "تجميع المحدد في أرشيف", "⇄", 0xFF31588F) { convertSelectedToQzra() },
+            dashboardTile("فحص السلامة", "التحقق الكامل من SHA-256", "✓", 0xFF31588F) { pickArchive(REQUEST_VERIFY) })
+        addTileRow(root,
+            dashboardTile("استخراج الأرشيف", "استخراج كامل أو انتقائي", "⇩", 0xFF31588F) { pickArchive(REQUEST_EXTRACT) },
+            dashboardTile("إضافة مجلد", "ضم المجلدات الفرعية", "▱", 0xFF31588F) { pickFolder() })
+
+        root.addView(sectionLabel("مصادر التحويل"))
+        selectionSummary = infoPanel("لم تتم إضافة ملفات أو مجلدات بعد.\nاختر ملفات أو مجلدات متعددة لتجميعها في أرشيف QZRA واحد.")
+        root.addView(selectionSummary, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        val sourceActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        sourceActions.addView(compactAction("إضافة ملفات", "＋") { pickFiles() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
+        sourceActions.addView(compactAction("مسح الاختيار", "×") { clearSelection() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) })
+        root.addView(sourceActions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+
+        root.addView(sectionLabel("مركز العمليات"))
+        status = infoPanel("جاهز للعمل. اختر إحدى الأدوات للبدء.")
+        root.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        root.addView(TextView(this).apply {
+            text = "QAMZOR  •  QZRA Archive System"
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(0xFF8299BE.toInt())
+            setPadding(0, dp(22), 0, dp(4))
+        })
+        setContentView(scroll)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun rounded(color: Int, radius: Int): GradientDrawable = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radius).toFloat()
+    }
+
+    private fun infoPanel(message: String) = TextView(this).apply {
+        text = message
+        textSize = 14f
+        setTextColor(0xFFE0E9F8.toInt())
+        setPadding(dp(16), dp(15), dp(16), dp(15))
+        background = rounded(0xFF1A2A49.toInt(), 18)
+        gravity = Gravity.CENTER_VERTICAL
+        minHeight = dp(64)
     }
 
     private fun sectionLabel(label: String) = TextView(this).apply {
         text = label
         textSize = 17f
-        setTextColor(0xFF2455A4.toInt())
-        setPadding(2, 18, 2, 4)
+        setTypeface(null, android.graphics.Typeface.BOLD)
+        setTextColor(0xFFB9D0F7.toInt())
+        setPadding(dp(2), dp(14), dp(2), dp(8))
     }
 
-    private fun actionButton(label: String, description: String, action: () -> Unit): Button = Button(this).apply {
-        text = "$label\n$description"
-        isAllCaps = false
-        textSize = 15f
+    private fun dashboardTile(title: String, description: String, symbol: String, color: Int, action: () -> Unit): View {
+        val tile = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            background = rounded(color, 22)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { action() }
+            minimumHeight = dp(142)
+            contentDescription = "$title. $description"
+        }
+        tile.addView(TextView(this).apply {
+            text = symbol
+            textSize = 27f
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.END
+        })
+        tile.addView(TextView(this).apply {
+            text = title
+            textSize = 18f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, dp(8), 0, dp(5))
+        })
+        tile.addView(TextView(this).apply {
+            text = description
+            textSize = 12f
+            setTextColor(0xFFD8E4F7.toInt())
+        })
+        return tile
+    }
+
+    private fun addTileRow(parent: LinearLayout, first: View, second: View) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(first, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+        row.addView(second, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) })
+        parent.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+    }
+
+    private fun compactAction(label: String, symbol: String, action: () -> Unit): View = TextView(this).apply {
+        text = "$symbol  $label"
+        textSize = 13f
+        gravity = Gravity.CENTER
+        setTextColor(0xFFF4F7FF.toInt())
+        background = rounded(0xFF263D63.toInt(), 14)
+        isClickable = true
+        isFocusable = true
         setOnClickListener { action() }
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8 }
     }
 
     private fun pickFiles() {
@@ -154,6 +265,7 @@ class MainActivity : Activity() {
                 REQUEST_FOLDER -> addSelectedFolder(data)
                 REQUEST_SAVE_ARCHIVE -> savePendingArchive(data.data)
                 REQUEST_BROWSE -> browseSelectedArchive(data.data)
+                REQUEST_VERIFY -> verifySelectedArchive(data.data)
                 REQUEST_EXTRACT -> {
                     val selected = data.data ?: error("لم يتم اختيار أرشيف")
                     pendingExtractionPaths = null
@@ -181,6 +293,20 @@ class MainActivity : Activity() {
             }
         } catch (error: Exception) {
             status.text = "فشلت العملية: ${error.message ?: error.javaClass.simpleName}"
+        }
+    }
+
+    private fun verifySelectedArchive(uri: Uri?) {
+        val selected = uri ?: error("لم يتم اختيار أرشيف")
+        status.text = "جارٍ فحص جميع بيانات الأرشيف والتحقق من SHA-256..."
+        runOnWorker("فشل فحص الأرشيف") {
+            val archive = copyUriToCache(selected, "qamzor-verify-${System.currentTimeMillis()}.qzra")
+            val result = ArchiveEngine.verify(archive)
+            runOnUiThread {
+                status.text = if (result.valid) {
+                    "الأرشيف سليم ✓\nالملفات التي تم فحصها: ${result.filesChecked}\nالبيانات التي تم التحقق منها: ${formatBytes(result.bytesChecked)}"
+                } else "لم يكتمل التحقق من سلامة الأرشيف."
+            }
         }
     }
 
@@ -746,5 +872,6 @@ class MainActivity : Activity() {
         private const val REQUEST_BROWSE = 23
         private const val REQUEST_EXTRACT = 24
         private const val REQUEST_OUTPUT_TREE = 25
+        private const val REQUEST_VERIFY = 26
     }
 }

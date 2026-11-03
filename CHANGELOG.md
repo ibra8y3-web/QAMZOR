@@ -94,3 +94,12 @@
 - Updated Android and Desktop clients to label the workflow as conversion to the native QZRA container; the Android flow verifies the resulting archive before offering it for saving.
 - Added regression tests for mixed files/folders, nested and empty directories, source preservation, archive verification and CLI extension validation.
 - Clarified that QZRA conversion is lossless packaging, not a generic document/image/audio/video codec conversion.
+
+
+## 2026-11-03 — Android dashboard redesign and CI diagnostics
+
+- Replaced the vertically stacked default Android buttons with a dark navy QAMZOR dashboard, responsive two-column action cards, clearer sections, selection/status panels, RTL layout, and consistent spacing.
+- Added a full archive integrity-check action to the Android dashboard; it runs `ArchiveEngine.verify` over every stored file and reports verified file/byte counts.
+- Kept existing SAF file/folder selection, QZRA conversion, virtual browsing, preview, and extraction operations connected to their existing handlers.
+- Added always-uploaded Kotlin core/SDK JUnit XML and HTML reports to the platform workflow, and enabled Gradle stack traces so macOS test failures expose their exact test names and causes.
+- Validation in this workspace: Python suite 60/60 passed. Android/Gradle and macOS Kotlin tests could not be executed in this environment; the two remote macOS test failures are not considered fixed until their JUnit reports are inspected and the matrix passes.

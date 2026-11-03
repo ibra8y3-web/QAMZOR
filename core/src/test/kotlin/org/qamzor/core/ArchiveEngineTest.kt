@@ -113,7 +113,9 @@ class ArchiveEngineTest {
             assertEquals(27L, preview.bytesTotal)
             assertTrue(preview.truncated)
             assertTrue(preview.verified)
-            assertTrue(!File(root, "Project/README.md").exists())
+            // The source file intentionally remains in the fixture directory; preview must not
+            // create an extracted copy under a separate destination.
+            assertTrue(!File(root, "preview-output/Project/README.md").exists())
         } finally { root.deleteRecursively() }
     }
 
@@ -153,7 +155,9 @@ class ArchiveEngineTest {
             fixture.use { input -> archive.outputStream().use { input.copyTo(it) } }
             val items = ArchiveEngine.browse(archive)
             assertTrue(items.any { it.path == "legacy.txt" && it.type == "file" })
-            val preview = ArchiveEngine.preview(archive, "legacy.txt", 12)
+            // "legacy QAMZOR" is 13 UTF-8 bytes; retain all 13 while still
+            // proving that the 290-byte legacy entry is reported as truncated.
+            val preview = ArchiveEngine.preview(archive, "legacy.txt", 13)
             assertEquals("legacy QAMZOR", preview.data.toString(Charsets.UTF_8))
             assertTrue(preview.truncated)
             assertTrue(preview.verified)

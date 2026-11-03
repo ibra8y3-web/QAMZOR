@@ -26,7 +26,18 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Run Kotlin core and SDK tests; package desktop distribution
-        run: gradle --no-daemon :core:test :sdk:test :desktopApp:installDist
+        run: gradle --no-daemon --stacktrace :core:test :sdk:test :desktopApp:installDist
+      - name: Upload Kotlin test reports (including failures)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qamzor-kotlin-test-reports-${{ matrix.os }}
+          path: |
+            core/build/test-results/test/**
+            core/build/reports/tests/test/**
+            sdk/build/test-results/test/**
+            sdk/build/reports/tests/test/**
+          if-no-files-found: warn
       - name: Upload desktop distribution
         uses: actions/upload-artifact@v7
         with:

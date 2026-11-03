@@ -188,3 +188,11 @@ Implemented an explicit lossless conversion workflow across the Kotlin core, And
 - Android performs a post-write `ArchiveEngine.verify` and checks the verified file count before presenting the save dialog.
 - Python regression suite after this update: **60/60 passed**; editable package installation and `qz convert` → `qz verify` → `qz extract` smoke test passed with byte-for-byte comparisons.
 - Kotlin core/SDK tests for conversion are included in the source tree but remain unexecuted here because Gradle/dependency caches and Android SDK are unavailable. A fresh APK has not been built in this workspace; GitHub Actions must run before APK/device validation.
+
+
+## Android UI / CI follow-up — 2026-11-03
+
+- Android dashboard source redesigned in `androidApp/src/main/java/org/qamzor/android/MainActivity.kt` with a dark navy/blue two-column card layout, RTL labels, and dedicated panels for selected sources and operation status.
+- Added an Android full-archive verification entry point using the existing SHA-256 verifier.
+- CI now preserves Kotlin JUnit XML/HTML reports on success or failure and runs Gradle with `--stacktrace`.
+- Python tests: 60/60 passed after these changes. Android APK build and Kotlin/macOS Gradle tests remain pending a GitHub Actions run; do not mark them passed based on source edits alone.
