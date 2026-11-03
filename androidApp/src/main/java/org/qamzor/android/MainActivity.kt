@@ -123,14 +123,14 @@ class MainActivity : Activity() {
 
         root.addView(sectionLabel("الأدوات الرئيسية"))
         addTileRow(root,
-            dashboardTile("اختيار ملفات", "إضافة ملفات إلى الأرشيف", "＋", 0xFF31588F) { pickFiles() },
-            dashboardTile("استعراض الأرشيف", "تصفح المحتويات داخليًا", "⌕", 0xFF31588F) { pickArchive(REQUEST_BROWSE) })
+            dashboardTile("اختيار ملفات", "إضافة ملفات إلى الأرشيف", "＋", 0xFF31588F.toInt()) { pickFiles() },
+            dashboardTile("استعراض الأرشيف", "تصفح المحتويات داخليًا", "⌕", 0xFF31588F.toInt()) { pickArchive(REQUEST_BROWSE) })
         addTileRow(root,
-            dashboardTile("تحويل إلى QZRA", "تجميع المحدد في أرشيف", "⇄", 0xFF31588F) { convertSelectedToQzra() },
-            dashboardTile("فحص السلامة", "التحقق الكامل من SHA-256", "✓", 0xFF31588F) { pickArchive(REQUEST_VERIFY) })
+            dashboardTile("تحويل إلى QZRA", "تجميع المحدد في أرشيف", "⇄", 0xFF31588F.toInt()) { convertSelectedToQzra() },
+            dashboardTile("فحص السلامة", "التحقق الكامل من SHA-256", "✓", 0xFF31588F.toInt()) { pickArchive(REQUEST_VERIFY) })
         addTileRow(root,
-            dashboardTile("استخراج الأرشيف", "استخراج كامل أو انتقائي", "⇩", 0xFF31588F) { pickArchive(REQUEST_EXTRACT) },
-            dashboardTile("إضافة مجلد", "ضم المجلدات الفرعية", "▱", 0xFF31588F) { pickFolder() })
+            dashboardTile("استخراج الأرشيف", "استخراج كامل أو انتقائي", "⇩", 0xFF31588F.toInt()) { pickArchive(REQUEST_EXTRACT) },
+            dashboardTile("إضافة مجلد", "ضم المجلدات الفرعية", "▱", 0xFF31588F.toInt()) { pickFolder() })
 
         root.addView(sectionLabel("مصادر التحويل"))
         selectionSummary = infoPanel("لم تتم إضافة ملفات أو مجلدات بعد.\nاختر ملفات أو مجلدات متعددة لتجميعها في أرشيف QZRA واحد.")
