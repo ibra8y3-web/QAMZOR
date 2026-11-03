@@ -42,6 +42,36 @@ class ArchiveEngineTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun createsAuthenticatesAndExtractsPasswordProtectedQzra12Archive() {
+        val root = Files.createTempDirectory("qamzor-encrypted-create-test").toFile()
+        try {
+            val source = File(root, "Private Folder").apply { mkdirs() }
+            val secret = "private archive payload\n".repeat(8000).toByteArray()
+            File(source, "secret.txt").writeBytes(secret)
+            File(source, "empty").mkdirs()
+            val archive = File(root, "private.qzra")
+
+            val created = ArchiveEngine.convertToQzra(archive, listOf(source), password = "correct horse battery staple")
+            assertEquals(3, created.entries)
+            assertEquals(1, created.files)
+            assertEquals("1.2", ArchiveEngine.verify(archive, "correct horse battery staple").version)
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.list(archive) }
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.verify(archive, "wrong password") }
+
+            val rootItems = ArchiveEngine.browse(archive, "", "correct horse battery staple")
+            assertEquals(listOf("Private Folder"), rootItems.map { it.name })
+            val preview = ArchiveEngine.preview(archive, "Private Folder/secret.txt", 32, "correct horse battery staple")
+            assertContentEquals(secret.copyOfRange(0, 32), preview.data)
+            assertTrue(preview.truncated)
+            assertTrue(preview.verified)
+
+            val destination = File(root, "restored")
+            ArchiveEngine.extractSelected(archive, destination, setOf("Private Folder"), password = "correct horse battery staple")
+            assertContentEquals(secret, File(destination, "Private Folder/secret.txt").readBytes())
+            assertTrue(File(destination, "Private Folder/empty").isDirectory)
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun createsVerifiesAndExtractsChunkedArchive() {
         val root = Files.createTempDirectory("qamzor-core-test").toFile()
         try {
@@ -267,4 +297,90 @@ class ArchiveEngineTest {
             assertFailsWith<IllegalArgumentException> { ArchiveEngine.verify(archive) }
         } finally { root.deleteRecursively() }
     }
+    @Test fun comparesArchiveContentUsingVerifiedSha256RatherThanOnlyFileSizes() {
+        val root = Files.createTempDirectory("qamzor-content-compare-test").toFile()
+        try {
+            val leftSource = File(root, "left/Project").apply { mkdirs() }
+            val rightSource = File(root, "right/Project").apply { mkdirs() }
+            File(leftSource, "same-size.bin").writeBytes("AAAA".toByteArray())
+            File(rightSource, "same-size.bin").writeBytes("BBBB".toByteArray())
+            File(leftSource, "same.bin").writeBytes("same".toByteArray())
+            File(rightSource, "same.bin").writeBytes("same".toByteArray())
+            File(leftSource, "removed.txt").writeText("removed")
+            File(rightSource, "added.txt").writeText("added")
+            val left = File(root, "left.qzra")
+            val right = File(root, "right.qzra")
+            ArchiveEngine.create(left, listOf(leftSource))
+            ArchiveEngine.create(right, listOf(rightSource))
+
+            val report = ArchiveEngine.compareContent(left, right)
+            assertTrue(report.contentVerified)
+            assertEquals(listOf("Project/added.txt"), report.added)
+            assertEquals(listOf("Project/removed.txt"), report.removed)
+            assertEquals(listOf("Project/same-size.bin"), report.changed)
+            assertEquals(listOf("Project/same.bin"), report.unchanged)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun readsPythonQzra13GoldenFixtureAndUnlocksFolderIndependently() {
+        val root = Files.createTempDirectory("qamzor-qzra13-python-fixture").toFile()
+        try {
+            val fixture = javaClass.getResourceAsStream("/qzra-1.3/python-reference-protected.qzra")
+                ?: error("QZRA 1.3 Python golden fixture is missing")
+            val archive = File(root, "python-v13.qzra")
+            fixture.use { input -> archive.outputStream().use { input.copyTo(it) } }
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.list(archive) }
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.list(archive, "wrong-master") }
+            val master = "QAMZOR-v1.3-fixture-master"
+            val entries = ArchiveEngine.list(archive, master)
+            assertTrue(entries.any { it.path == "FixtureProject/README.txt" })
+            assertFailsWith<IllegalStateException> { ArchiveEngine.verify(archive, master) }
+            val folderPath = "FixtureProject/Vault"
+            val folderPassword = "QAMZOR-v1.3-fixture-vault"
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.verify(archive, master, mapOf(folderPath to "wrong-folder")) }
+            val verified = ArchiveEngine.verify(archive, master, mapOf(folderPath to folderPassword))
+            assertTrue(verified.valid)
+            assertEquals("1.3", verified.version)
+            val publicPreview = ArchiveEngine.preview(archive, "FixtureProject/README.txt", 4096, master)
+            assertTrue(publicPreview.verified)
+            val secretPreview = ArchiveEngine.preview(archive, "FixtureProject/Vault/secret.txt", 4096, master, mapOf(folderPath to folderPassword))
+            assertTrue(secretPreview.verified)
+            assertTrue(secretPreview.bytesTotal > 0)
+            assertTrue(!archive.readBytes().toString(Charsets.ISO_8859_1).contains("FixtureProject/Vault"))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun writesAndVerifiesQzra13WithHiddenMetadataAndFolderScope() {
+        val root = Files.createTempDirectory("qamzor-qzra13-kotlin-writer").toFile()
+        try {
+            val project = File(root, "Project").apply { mkdirs() }
+            File(project, "README.txt").writeText("public\n".repeat(1000))
+            File(project, "Vault/EmptyDirectory").mkdirs()
+            val secret = ByteArray(240_000) { ((it * 17) % 251).toByte() }
+            File(project, "Vault/secret.bin").writeBytes(secret)
+            val archive = File(root, "written-v13.qzra")
+            val master = "test-master-password-13"
+            val folderPath = "Project/Vault"
+            val folderPassword = "different-folder-password"
+            val result = ArchiveEngine.convertToQzra(
+                archive, listOf(project), password = master, encryptMetadata = true,
+                folderPasswords = mapOf(folderPath to folderPassword)
+            )
+            assertEquals(5, result.entries)
+            val bytes = archive.readBytes()
+            assertEquals(3, java.nio.ByteBuffer.wrap(bytes, 10, 2).short.toInt())
+            assertEquals(0, java.nio.ByteBuffer.wrap(bytes, 24, 4).int)
+            assertTrue(!bytes.toString(Charsets.ISO_8859_1).contains("Project/Vault"))
+            assertFailsWith<IllegalStateException> { ArchiveEngine.verify(archive, master) }
+            assertTrue(ArchiveEngine.verify(archive, master, mapOf(folderPath to folderPassword)).valid)
+            val output = File(root, "out")
+            ArchiveEngine.extractSelected(
+                archive, output, setOf("Project/Vault/secret.bin"), password = master,
+                folderPasswords = mapOf(folderPath to folderPassword)
+            )
+            assertContentEquals(secret, File(output, "Project/Vault/secret.bin").readBytes())
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.list(archive, "wrong-master") }
+        } finally { root.deleteRecursively() }
+    }
+
 }

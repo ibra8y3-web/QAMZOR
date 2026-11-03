@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.encodeToJsonElement
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -23,8 +24,10 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.AtomicMoveNotSupportedException
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.nio.ByteBuffer
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.AEADBadTagException
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -33,8 +36,7 @@ import java.util.zip.Deflater
 import java.util.zip.DeflaterOutputStream
 import java.util.zip.InflaterInputStream
 
-/** Kotlin QZRA engine: reads 1.0/1.1 and authenticated AES-256-GCM 1.2 archives;
- * writes interoperable, chunked 1.1 archives. */
+/** Kotlin QZRA engine: reads and writes QZRA 1.0-1.3 with authenticated encryption. */
 object ArchiveEngine {
     private val magic = byteArrayOf(0x51, 0x5a, 0x52, 0x41, 0x0d, 0x0a, 0x1a, 0x0a)
     private const val HEADER_SIZE = 32
@@ -52,9 +54,22 @@ object ArchiveEngine {
         val security: Security? = null,
         val manifest_auth: ManifestAuth? = null
     )
-    @Serializable private data class Security(val encryption: String, val kdf: Kdf)
+    @Serializable private data class Security(
+        val encryption: String, val kdf: Kdf,
+        val manifest_encryption: String? = null,
+        val scopes: List<FolderScope> = emptyList()
+    )
     @Serializable private data class Kdf(val name: String, val n: Int, val r: Int, val p: Int, val salt: String)
     @Serializable private data class ManifestAuth(val nonce: String, val tag: String)
+    @Serializable private data class ScopeCheck(val nonce: String, val tag: String)
+    @Serializable private data class FolderScope(
+        val id: String, val path: String, val kdf: Kdf, val key_check: ScopeCheck
+    )
+    private data class ArchiveKeys(
+        val minor: Int, val rootChunkKey: ByteArray?,
+        val scopeKeys: Map<String, ByteArray> = emptyMap(),
+        val scopePaths: Map<String, String> = emptyMap()
+    )
     @Serializable private data class Entry(
         val path: String, val type: String, val size: Long,
         val sha256: String? = null, val chunks: List<Chunk>? = null,
@@ -62,7 +77,8 @@ object ArchiveEngine {
     )
     @Serializable private data class Chunk(
         val offset: Long, val compressed_size: Long, val size: Long,
-        val compression: String, val sha256: String, val nonce: String? = null
+        val compression: String, val sha256: String, val nonce: String? = null,
+        val scope_id: String? = null
     )
 
     data class EntryInfo(val path: String, val type: String, val size: Long)
@@ -70,15 +86,32 @@ object ArchiveEngine {
     data class VerifyResult(val valid: Boolean, val filesChecked: Int, val bytesChecked: Long, val version: String)
     data class BrowseItem(val path: String, val name: String, val type: String, val size: Long)
     data class PreviewResult(val path: String, val data: ByteArray, val bytesTotal: Long, val truncated: Boolean, val verified: Boolean)
+    data class CompareResult(
+        val leftVersion: String, val rightVersion: String,
+        val added: List<String>, val removed: List<String>,
+        val changed: List<String>, val unchanged: List<String>,
+        val contentVerified: Boolean
+    )
 
     @JvmStatic
     @JvmOverloads
-    fun create(archive: File, sources: List<File>, overwrite: Boolean = false): CreateResult {
+    fun create(
+        archive: File,
+        sources: List<File>,
+        overwrite: Boolean = false,
+        password: String? = null,
+        encryptMetadata: Boolean = false,
+        folderPasswords: Map<String, String> = emptyMap()
+    ): CreateResult {
         require(sources.isNotEmpty()) { "Select at least one source file or folder" }
+        require(password == null || password.isNotEmpty()) { "Encryption password must not be empty" }
+        val useV13 = encryptMetadata || folderPasswords.isNotEmpty()
+        require(!useV13 || !password.isNullOrEmpty()) { "QZRA 1.3 requires an archive master password" }
+        require(folderPasswords.size <= 32) { "At most 32 independently protected folders are supported" }
         require(!archive.exists() || overwrite) { "Destination already exists: ${archive.path}" }
         archive.absoluteFile.parentFile?.mkdirs()
         val items = collectSources(sources, archive)
-        require(items.isNotEmpty()) { "No supported files were found" }
+        require(items.isNotEmpty()) { "No source entries were found; the selected folder may be empty or inaccessible" }
         require(items.map { it.name.lowercase() }.toSet().size == items.size) { "Archive paths collide ignoring case" }
         val kinds = items.associate { it.name to if (it.directory) "directory" else "file" }
         for (item in items) {
@@ -88,6 +121,34 @@ object ArchiveEngine {
         }
         require(items.size <= MAX_ENTRIES) { "Too many archive entries" }
 
+        val secureRandom = SecureRandom()
+        val encryptionSalt = if (password != null) ByteArray(16).also(secureRandom::nextBytes) else null
+        val encryptionKey = if (password != null && encryptionSalt != null) deriveScryptKey(password, encryptionSalt) else null
+        val formatMinor = if (useV13) 3 else if (password != null) 2 else 1
+        val rootChunkKey = if (useV13 && encryptionKey != null) deriveV13Subkey(encryptionKey, "root-chunks") else encryptionKey
+        val folderScopes = LinkedHashMap<String, FolderScope>()
+        val scopeKeys = LinkedHashMap<String, ByteArray>()
+        if (useV13) {
+            val directories = items.filter { it.directory }.map { it.name }.toSet()
+            for ((folderPath, folderPassword) in folderPasswords.toSortedMap()) {
+                validatePath(folderPath)
+                require(folderPath in directories) { "Protected folder does not exist in selected sources: $folderPath" }
+                require(folderPassword.isNotEmpty()) { "Folder password must not be empty: $folderPath" }
+                val scopeId = ByteArray(16).also(secureRandom::nextBytes).toHex()
+                val scopeSalt = ByteArray(16).also(secureRandom::nextBytes)
+                val folderMaster = deriveScryptKey(folderPassword, scopeSalt)
+                val checkKey = deriveV13Subkey(folderMaster, "folder-check")
+                val payloadKey = deriveV13Subkey(folderMaster, "folder-chunks")
+                val checkNonce = ByteArray(12).also(secureRandom::nextBytes)
+                val checkTag = encryptAead(ByteArray(0), checkKey, checkNonce, scopeCheckAad(scopeId, folderPath))
+                folderScopes[folderPath] = FolderScope(
+                    scopeId, folderPath, Kdf("scrypt", 1 shl 15, 8, 1, scopeSalt.toHex()),
+                    ScopeCheck(checkNonce.toHex(), checkTag.toHex())
+                )
+                scopeKeys[scopeId] = payloadKey
+                folderMaster.fill(0); checkKey.fill(0)
+            }
+        }
         val spool = File.createTempFile("qamzor-payload-", ".tmp", archive.absoluteFile.parentFile)
         val index = LinkedHashMap<String, Chunk>()
         val entries = ArrayList<Entry>(items.size)
@@ -103,25 +164,32 @@ object ArchiveEngine {
                     val fileDigest = MessageDigest.getInstance("SHA-256")
                     var fileSize = 0L
                     val refs = ArrayList<Chunk>()
+                    val activeFolder = folderScopes.keys.filter { name.startsWith("$it/") }.maxByOrNull { it.length }
+                    val scopeId = activeFolder?.let { folderScopes.getValue(it).id }
+                    val chunkKey = if (scopeId != null) scopeKeys.getValue(scopeId) else rootChunkKey
                     FileInputStream(source).use { input ->
                         forEachChunk(input) { raw ->
                             fileDigest.update(raw)
                             fileSize += raw.size
                             val digest = sha256(raw)
-                            val key = "$digest:${raw.size}"
+                            val key = "${scopeId ?: "-"}:$digest:${raw.size}"
                             val existing = index[key]
                             if (existing != null) {
                                 refs += existing
                             } else {
                                 val compressed = deflate(raw)
                                 val method: String
-                                val bytes: ByteArray
-                                if (compressed.size < raw.size) { method = "zlib"; bytes = compressed }
-                                else { method = "store"; bytes = raw }
-                                val block = Chunk(payloadLength, bytes.size.toLong(), raw.size.toLong(), method, digest)
+                                val plainEncoded: ByteArray
+                                if (compressed.size < raw.size) { method = "zlib"; plainEncoded = compressed }
+                                else { method = "store"; plainEncoded = raw }
+                                val nonce = if (chunkKey != null) ByteArray(12).also(secureRandom::nextBytes) else null
+                                val encoded = if (chunkKey != null && nonce != null) {
+                                    encryptChunk(plainEncoded, raw.size.toLong(), digest, method, chunkKey, nonce, formatMinor, scopeId)
+                                } else plainEncoded
+                                val block = Chunk(payloadLength, encoded.size.toLong(), raw.size.toLong(), method, digest, nonce?.toHex(), scopeId)
                                 payload.seek(payloadLength)
-                                payload.write(bytes)
-                                payloadLength += bytes.size
+                                payload.write(encoded)
+                                payloadLength += encoded.size
                                 index[key] = block
                                 refs += block
                             }
@@ -131,17 +199,46 @@ object ArchiveEngine {
                     originalBytes += fileSize
                 }
             }
-            val manifestBytes = json.encodeToString(Manifest("QZRA", "1.1", entries)).toByteArray(Charsets.UTF_8)
-            require(manifestBytes.size <= MAX_MANIFEST) { "Manifest exceeds QZRA limit" }
+
+            val security = if (encryptionKey != null && encryptionSalt != null) {
+                Security(
+                    "AES-256-GCM", Kdf("scrypt", 1 shl 15, 8, 1, encryptionSalt.toHex()),
+                    if (formatMinor == 3) "AES-256-GCM" else null,
+                    if (formatMinor == 3) folderScopes.toSortedMap().values.toList() else emptyList()
+                )
+            } else null
+            val manifest = when (formatMinor) {
+                3 -> Manifest("QZRA", "1.3", entries, requireNotNull(security))
+                2 -> {
+                    val unsigned = Manifest("QZRA", "1.2", entries, requireNotNull(security), null)
+                    val unsignedElement = sortJson(json.encodeToJsonElement(unsigned))
+                    val canonicalUnsigned = json.encodeToString(JsonElement.serializer(), unsignedElement).toByteArray(Charsets.UTF_8)
+                    val manifestNonce = ByteArray(12).also(secureRandom::nextBytes)
+                    val authTag = authenticateManifestForWrite(requireNotNull(encryptionKey), manifestNonce, canonicalUnsigned)
+                    Manifest("QZRA", "1.2", entries, security, ManifestAuth(manifestNonce.toHex(), authTag.toHex()))
+                }
+                else -> Manifest("QZRA", "1.1", entries)
+            }
+            val manifestElement = json.encodeToJsonElement(manifest)
+            val plainManifestBytes = if (formatMinor >= 2) {
+                json.encodeToString(JsonElement.serializer(), sortJson(manifestElement)).toByteArray(Charsets.UTF_8)
+            } else json.encodeToString(manifest).toByteArray(Charsets.UTF_8)
+            require(plainManifestBytes.size <= MAX_MANIFEST) { "Manifest exceeds QZRA limit" }
+            val manifestBytes = if (formatMinor == 3) {
+                val manifestNonce = ByteArray(12).also(secureRandom::nextBytes)
+                val aad = manifestAad(requireNotNull(encryptionSalt), manifestNonce, 0, 0)
+                val encrypted = encryptAead(plainManifestBytes, deriveV13Subkey(requireNotNull(encryptionKey), "manifest"), manifestNonce, aad)
+                "QZ13".toByteArray(Charsets.US_ASCII) + requireNotNull(encryptionSalt) + manifestNonce + encrypted
+            } else plainManifestBytes
             val temporary = File.createTempFile(".${archive.name}.", ".tmp", archive.absoluteFile.parentFile)
             try {
                 DataOutputStream(FileOutputStream(temporary)).use { output ->
                     output.write(magic)
                     output.writeShort(1)
-                    output.writeShort(1)
+                    output.writeShort(formatMinor)
                     output.writeInt(0)
                     output.writeLong(manifestBytes.size.toLong())
-                    output.writeInt(entries.size)
+                    output.writeInt(if (formatMinor == 3) 0 else entries.size)
                     output.writeInt(0)
                     output.write(manifestBytes)
                     FileInputStream(spool).use { it.copyTo(output) }
@@ -158,7 +255,12 @@ object ArchiveEngine {
                 }
             } finally { temporary.delete() }
             return CreateResult(archive, entries.size, entries.count { it.type == "file" }, originalBytes, payloadLength)
-        } finally { spool.delete() }
+        } finally {
+            encryptionKey?.fill(0)
+            if (rootChunkKey !== encryptionKey) rootChunkKey?.fill(0)
+            scopeKeys.values.forEach { it.fill(0) }
+            spool.delete()
+        }
     }
 
     /**
@@ -169,16 +271,23 @@ object ArchiveEngine {
      */
     @JvmStatic
     @JvmOverloads
-    fun convertToQzra(destination: File, inputs: List<File>, overwrite: Boolean = false): CreateResult {
+    fun convertToQzra(
+        destination: File,
+        inputs: List<File>,
+        overwrite: Boolean = false,
+        password: String? = null,
+        encryptMetadata: Boolean = false,
+        folderPasswords: Map<String, String> = emptyMap()
+    ): CreateResult {
         require(destination.extension.equals("qzra", ignoreCase = true)) {
             "QZRA conversion destination must use the .qzra extension"
         }
-        return create(destination, inputs, overwrite)
+        return create(destination, inputs, overwrite, password, encryptMetadata, folderPasswords)
     }
 
     @JvmStatic
     @JvmOverloads
-    fun list(archive: File, password: String? = null): List<EntryInfo> = readManifest(archive, password).second.entries.map { EntryInfo(it.path, it.type, it.size) }
+    fun list(archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<EntryInfo> = readManifest(archive, password, folderPasswords).second.entries.map { EntryInfo(it.path, it.type, it.size) }
 
     /** List only the immediate children of a virtual directory inside the archive.
      * No payload data is expanded or written to disk. Implicit parent directories
@@ -187,8 +296,8 @@ object ArchiveEngine {
      */
     @JvmStatic
     @JvmOverloads
-    fun browse(archive: File, directoryPath: String = "", password: String? = null): List<BrowseItem> {
-        val (_, manifest, _, _) = readManifest(archive, password)
+    fun browse(archive: File, directoryPath: String = "", password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<BrowseItem> {
+        val (_, manifest, _, _) = readManifest(archive, password, folderPasswords)
         val parent = directoryPath.trim('/')
         if (parent.isNotEmpty()) validatePath(parent)
         val prefix = if (parent.isEmpty()) "" else "$parent/"
@@ -219,10 +328,10 @@ object ArchiveEngine {
      */
     @JvmStatic
     @JvmOverloads
-    fun preview(archive: File, path: String, maxBytes: Int = 2 * 1024 * 1024, password: String? = null): PreviewResult {
+    fun preview(archive: File, path: String, maxBytes: Int = 2 * 1024 * 1024, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): PreviewResult {
         require(maxBytes in 0..16 * 1024 * 1024) { "Preview limit must be between 0 and 16 MiB" }
         validatePath(path)
-        val context = readManifest(archive, password)
+        val context = readManifest(archive, password, folderPasswords)
         val (_, manifest, payloadStart, fileLength) = context
         val entry = manifest.entries.firstOrNull { it.path == path } ?: error("Archive entry does not exist: $path")
         require(entry.type == "file") { "A directory cannot be previewed as a file" }
@@ -245,11 +354,12 @@ object ArchiveEngine {
         overwrite: Boolean = false,
         maxTotalBytes: Long = 4L * 1024 * 1024 * 1024,
         maxFiles: Int = 100_000,
-        password: String? = null
+        password: String? = null,
+        folderPasswords: Map<String, String> = emptyMap()
     ): List<File> {
         require(selectedPaths.isNotEmpty()) { "Select at least one archive item" }
         require(maxTotalBytes >= 0 && maxFiles >= 0) { "Extraction limits must be non-negative" }
-        val context = readManifest(archive, password)
+        val context = readManifest(archive, password, folderPasswords)
         val (_, manifest, payloadStart, fileLength) = context
         val byPath = manifest.entries.associateBy { it.path }
         val chosen = LinkedHashMap<String, Entry>()
@@ -326,9 +436,17 @@ object ArchiveEngine {
         output: OutputStream?,
         retained: ByteArrayOutputStream?,
         retainLimit: Int,
-        encryptionKey: ByteArray?
+        archiveKeys: ArchiveKeys?
     ): Long {
         require(entry.type == "file") { "Only file entries can be decoded" }
+        if (archiveKeys?.minor == 3) {
+            val protectedScope = archiveKeys.scopePaths.entries
+                .filter { entry.path.startsWith(it.value + "/") }
+                .maxByOrNull { it.value.length }
+            if (protectedScope != null && protectedScope.key !in archiveKeys.scopeKeys) {
+                error("Folder is locked; unlock it with its independent password: ${protectedScope.value}")
+            }
+        }
         val wholeDigest = MessageDigest.getInstance("SHA-256")
         var total = 0L
         val blocks = entry.chunks ?: if (entry.size == 0L) emptyList() else listOf(
@@ -342,10 +460,13 @@ object ArchiveEngine {
             val encoded = ByteArray(block.compressed_size.toInt())
             input.readFully(encoded)
             val compressed = if (block.nonce != null) {
-                require(encryptionKey != null) { "This QZRA archive is encrypted; password is required" }
-                decryptChunk(encoded, block, encryptionKey)
+                val keys = archiveKeys ?: error("This QZRA archive is encrypted; password is required")
+                val key = if (keys.minor == 3 && block.scope_id != null) {
+                    keys.scopeKeys[block.scope_id] ?: error("Folder is locked; unlock it with its independent password: ${keys.scopePaths[block.scope_id] ?: block.scope_id}")
+                } else requireNotNull(keys.rootChunkKey)
+                decryptChunk(encoded, block, key, keys.minor)
             } else {
-                require(encryptionKey == null) { "Encrypted archive contains an unauthenticated chunk" }
+                require(archiveKeys == null) { "Encrypted archive contains an unauthenticated chunk" }
                 encoded
             }
             val raw = when (block.compression) {
@@ -369,8 +490,8 @@ object ArchiveEngine {
 
     @JvmStatic
     @JvmOverloads
-    fun verify(archive: File, password: String? = null): VerifyResult {
-        val context = readManifest(archive, password)
+    fun verify(archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): VerifyResult {
+        val context = readManifest(archive, password, folderPasswords)
         val (version, manifest, payloadStart, fileLength) = context
         var files = 0
         var bytes = 0L
@@ -385,11 +506,43 @@ object ArchiveEngine {
         return VerifyResult(true, files, bytes, version)
     }
 
+    /**
+     * Compare two archives by verified SHA-256 content fingerprints. Each archive
+     * is fully decoded and verified before its manifest digests are compared;
+     * matching names and sizes alone are never treated as content equality.
+     * Currently supports the Kotlin engine's QZRA 1.0-1.2 readers.
+     */
+    @JvmStatic
+    fun compareContent(
+        leftArchive: File, rightArchive: File,
+        leftPassword: String? = null, rightPassword: String? = null,
+        leftFolderPasswords: Map<String, String> = emptyMap(), rightFolderPasswords: Map<String, String> = emptyMap()
+    ): CompareResult {
+        val leftVerification = verify(leftArchive, leftPassword, leftFolderPasswords)
+        val rightVerification = verify(rightArchive, rightPassword, rightFolderPasswords)
+        require(leftVerification.valid && rightVerification.valid) { "An archive failed content verification" }
+        val leftContext = readManifest(leftArchive, leftPassword, leftFolderPasswords)
+        val rightContext = readManifest(rightArchive, rightPassword, rightFolderPasswords)
+        val leftEntries = leftContext.second.entries.associateBy { it.path }
+        val rightEntries = rightContext.second.entries.associateBy { it.path }
+        val added = (rightEntries.keys - leftEntries.keys).sorted()
+        val removed = (leftEntries.keys - rightEntries.keys).sorted()
+        val changed = ArrayList<String>()
+        val unchanged = ArrayList<String>()
+        for (path in (leftEntries.keys intersect rightEntries.keys).sorted()) {
+            val before = leftEntries.getValue(path)
+            val after = rightEntries.getValue(path)
+            if (before.type != after.type || before.size != after.size || before.sha256 != after.sha256) changed += path
+            else unchanged += path
+        }
+        return CompareResult(leftContext.first, rightContext.first, added, removed, changed, unchanged, true)
+    }
+
     @JvmStatic
     @JvmOverloads
-    fun extract(archive: File, destination: File, overwrite: Boolean = false, password: String? = null): List<File> {
-        val allPaths = list(archive, password).map { it.path }.toSet()
-        return extractSelected(archive, destination, allPaths, overwrite, password = password).filter { it.isFile }
+    fun extract(archive: File, destination: File, overwrite: Boolean = false, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<File> {
+        val allPaths = list(archive, password, folderPasswords).map { it.path }.toSet()
+        return extractSelected(archive, destination, allPaths, overwrite, password = password, folderPasswords = folderPasswords).filter { it.isFile }
     }
 
     private data class SourceItem(val name: String, val file: File, val directory: Boolean)
@@ -427,43 +580,93 @@ object ArchiveEngine {
         return result.sortedBy { it.name }
     }
 
-    private fun readManifest(archive: File, password: String? = null): Quadruple<String, Manifest, Long, Long, ByteArray?> {
+    private fun readManifest(
+        archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()
+    ): Quadruple<String, Manifest, Long, Long, ArchiveKeys?> {
         RandomAccessFile(archive, "r").use { input ->
             require(input.length() >= HEADER_SIZE) { "File is too small to be QZRA" }
             val signature = ByteArray(8); input.readFully(signature)
             require(signature.contentEquals(magic)) { "Invalid QZRA signature" }
             val major = input.readUnsignedShort(); val minor = input.readUnsignedShort()
-            val flags = input.readInt()
-            val manifestLength = input.readLong()
-            val entryCount = input.readInt()
-            val reserved = input.readInt()
-            require(major == 1 && minor in 0..2) { "Unsupported QZRA version $major.$minor" }
+            val flags = input.readInt(); val manifestLength = input.readLong()
+            val entryCount = input.readInt(); val reserved = input.readInt()
+            require(major == 1 && minor in 0..3) { "Unsupported QZRA version $major.$minor" }
             require(flags == 0 && reserved == 0) { "Unsupported QZRA header flags/reserved field" }
-            require(manifestLength in 2..MAX_MANIFEST.toLong() && entryCount in 0..MAX_ENTRIES) { "Invalid manifest bounds" }
+            val maxManifest = MAX_MANIFEST.toLong() + if (minor == 3) 44L else 0L
+            require(manifestLength in 2..maxManifest && entryCount in 0..MAX_ENTRIES) { "Invalid manifest bounds" }
             require(HEADER_SIZE + manifestLength <= input.length()) { "Manifest extends beyond file" }
             val raw = ByteArray(manifestLength.toInt()); input.seek(HEADER_SIZE.toLong()); input.readFully(raw)
-            val rawText = raw.toString(Charsets.UTF_8)
+            var manifestRaw = raw
+            var rootKey: ByteArray? = null
+            if (minor == 3) {
+                require(entryCount == 0) { "QZRA 1.3 must hide the manifest entry count" }
+                require(raw.size >= 4 + 16 + 12 + 16 && raw.copyOfRange(0, 4).contentEquals("QZ13".toByteArray(Charsets.US_ASCII))) { "Invalid QZRA 1.3 encrypted manifest envelope" }
+                val salt = raw.copyOfRange(4, 20); val nonce = raw.copyOfRange(20, 32)
+                val supplied = password ?: throw IllegalArgumentException("QZRA 1.3 hides filenames and metadata; enter the archive master password")
+                val masterKey = deriveScryptKey(supplied, salt)
+                rootKey = deriveV13Subkey(masterKey, "root-chunks")
+                val manifestKey = deriveV13Subkey(masterKey, "manifest")
+                try {
+                    manifestRaw = decryptAead(raw.copyOfRange(32, raw.size), manifestKey, nonce, manifestAad(salt, nonce, flags, reserved))
+                } finally { masterKey.fill(0); manifestKey.fill(0) }
+                require(manifestRaw.size <= MAX_MANIFEST) { "Decrypted QZRA 1.3 manifest exceeds the size limit" }
+            }
+            val rawText = manifestRaw.toString(Charsets.UTF_8)
             val manifest = json.decodeFromString<Manifest>(rawText)
-            require(manifest.format == "QZRA" && manifest.version == "$major.$minor" && manifest.entries.size == entryCount) { "Manifest/header mismatch" }
-            val encryptionKey = if (minor == 2) {
-                val security = manifest.security ?: error("QZRA 1.2 security metadata is missing")
-                require(security.encryption == "AES-256-GCM") { "Unsupported QZRA encryption algorithm" }
-                val kdf = security.kdf
-                require(kdf.name == "scrypt" && kdf.n == 32768 && kdf.r == 8 && kdf.p == 1) { "Unsupported QZRA key-derivation parameters" }
-                require(kdf.salt.matches(Regex("[0-9a-f]{32}"))) { "Malformed QZRA scrypt salt" }
-                val auth = manifest.manifest_auth ?: error("QZRA manifest authentication metadata is missing")
-                require(auth.nonce.matches(Regex("[0-9a-f]{24}")) && auth.tag.matches(Regex("[0-9a-f]{32}"))) { "Malformed QZRA manifest authenticator" }
-                val supplied = password ?: throw IllegalArgumentException("This archive is encrypted. Enter its password to browse it.")
-                val key = deriveScryptKey(supplied, hexToBytes(kdf.salt))
-                authenticateManifest(key, hexToBytes(auth.nonce), hexToBytes(auth.tag), rawText)
-                key
-            } else {
-                require(manifest.security == null && manifest.manifest_auth == null) { "Unencrypted QZRA archives cannot contain encryption metadata" }
-                null
+            require(manifest.format == "QZRA" && manifest.version == "$major.$minor") { "Manifest/header version mismatch" }
+            if (minor != 3) require(manifest.entries.size == entryCount) { "Manifest/header entry count mismatch" }
+            val scopeKeys = LinkedHashMap<String, ByteArray>()
+            val scopePaths = LinkedHashMap<String, String>()
+            val keys: ArchiveKeys? = when (minor) {
+                2 -> {
+                    val security = manifest.security ?: error("QZRA 1.2 security metadata is missing")
+                    require(security.encryption == "AES-256-GCM") { "Unsupported QZRA encryption algorithm" }
+                    val kdf = security.kdf
+                    require(kdf.name == "scrypt" && kdf.n == 32768 && kdf.r == 8 && kdf.p == 1 && kdf.salt.matches(Regex("[0-9a-f]{32}"))) { "Unsupported QZRA key-derivation parameters" }
+                    val auth = manifest.manifest_auth ?: error("QZRA manifest authentication metadata is missing")
+                    require(auth.nonce.matches(Regex("[0-9a-f]{24}")) && auth.tag.matches(Regex("[0-9a-f]{32}"))) { "Malformed QZRA manifest authenticator" }
+                    val key = deriveScryptKey(password ?: throw IllegalArgumentException("This archive is encrypted. Enter its password to browse it."), hexToBytes(kdf.salt))
+                    authenticateManifest(key, hexToBytes(auth.nonce), hexToBytes(auth.tag), rawText)
+                    ArchiveKeys(2, key)
+                }
+                3 -> {
+                    val security = manifest.security ?: error("QZRA 1.3 security metadata is missing")
+                    require(security.encryption == "AES-256-GCM" && security.manifest_encryption == "AES-256-GCM") { "Unsupported QZRA 1.3 encryption configuration" }
+                    val kdf = security.kdf
+                    val envelopeSalt = raw.copyOfRange(4, 20).toHex()
+                    require(kdf.name == "scrypt" && kdf.n == 32768 && kdf.r == 8 && kdf.p == 1 && kdf.salt == envelopeSalt) { "Invalid QZRA 1.3 KDF metadata" }
+                    require(security.scopes.size <= 32) { "Too many QZRA 1.3 protected folders" }
+                    val ids = HashSet<String>(); val paths = HashSet<String>()
+                    for (scope in security.scopes) {
+                        validatePath(scope.path)
+                        require(scope.id.matches(Regex("[0-9a-f]{32}")) && ids.add(scope.id) && paths.add(scope.path)) { "Duplicate or malformed QZRA 1.3 scope" }
+                        require(scope.kdf.name == "scrypt" && scope.kdf.n == 32768 && scope.kdf.r == 8 && scope.kdf.p == 1 && scope.kdf.salt.matches(Regex("[0-9a-f]{32}"))) { "Invalid folder KDF parameters" }
+                        require(scope.key_check.nonce.matches(Regex("[0-9a-f]{24}")) && scope.key_check.tag.matches(Regex("[0-9a-f]{32}"))) { "Invalid folder key-check record" }
+                        scopePaths[scope.id] = scope.path
+                    }
+                    for ((path, folderPassword) in folderPasswords) {
+                        val scope = security.scopes.firstOrNull { it.path == path } ?: error("No protected folder exists at: $path")
+                        val folderMaster = deriveScryptKey(folderPassword, hexToBytes(scope.kdf.salt))
+                        val checkKey = deriveV13Subkey(folderMaster, "folder-check")
+                        val payloadKey = deriveV13Subkey(folderMaster, "folder-chunks")
+                        try {
+                            decryptAead(hexToBytes(scope.key_check.tag), checkKey, hexToBytes(scope.key_check.nonce), scopeCheckAad(scope.id, scope.path))
+                            scopeKeys[scope.id] = payloadKey
+                        } catch (error: Exception) {
+                            payloadKey.fill(0)
+                            throw IllegalArgumentException("Wrong password for protected folder: $path", error)
+                        } finally { folderMaster.fill(0); checkKey.fill(0) }
+                    }
+                    ArchiveKeys(3, rootKey, scopeKeys, scopePaths)
+                }
+                else -> {
+                    require(manifest.security == null && manifest.manifest_auth == null) { "Unencrypted QZRA archives cannot contain encryption metadata" }
+                    null
+                }
             }
             val payloadStart = HEADER_SIZE + manifestLength
             validateManifest(manifest, minor, input.length() - payloadStart)
-            return Quadruple(manifest.version, manifest, payloadStart, input.length(), encryptionKey)
+            return Quadruple(manifest.version, manifest, payloadStart, input.length(), keys)
         }
     }
 
@@ -507,8 +710,11 @@ object ArchiveEngine {
                     require((entry.size == 0L && chunks.isEmpty()) || (entry.size > 0L && chunks.isNotEmpty())) { "Invalid empty/non-empty chunk list" }
                     require(chunks.sumOf { it.size } == entry.size) { "Chunk sizes do not match file size" }
                     for (block in chunks) {
-                        if (minor == 2) require(block.nonce?.matches(Regex("[0-9a-f]{24}")) == true) { "QZRA 1.2 chunk is missing a valid AES-GCM nonce" }
-                        else require(block.nonce == null) { "AES-GCM nonces require QZRA 1.2" }
+                        if (minor >= 2) require(block.nonce?.matches(Regex("[0-9a-f]{24}")) == true) { "Encrypted QZRA chunk is missing a valid AES-GCM nonce" }
+                        else require(block.nonce == null && block.scope_id == null) { "AES-GCM metadata requires QZRA 1.2+" }
+                        if (minor == 3) {
+                            if (block.scope_id != null) require(block.scope_id.matches(Regex("[0-9a-f]{32}"))) { "Malformed QZRA 1.3 chunk scope" }
+                        } else require(block.scope_id == null) { "Folder-scoped chunks require QZRA 1.3" }
                         validateBlock(block, payloadLength, true)
                         val range = "${block.offset}:${block.compressed_size}"
                         val previous = physical[range]
@@ -522,6 +728,17 @@ object ArchiveEngine {
             val parts = entry.path.split('/')
             for (index in 1 until parts.size) require(kinds[parts.take(index).joinToString("/")] != "file") { "File entry is also a parent directory" }
             if (entry.type == "file") require(exact.none { it.startsWith(entry.path + "/") }) { "File entry has child paths" }
+        }
+        if (minor == 3) {
+            val scopes = manifest.security?.scopes ?: error("QZRA 1.3 folder scopes are missing")
+            val directoryPaths = manifest.entries.filter { it.type == "directory" }.map { it.path }.toSet()
+            val scopeById = scopes.associateBy { it.id }
+            for (scope in scopes) require(scope.path in directoryPaths) { "Protected folder is not declared as a directory: ${scope.path}" }
+            for (entry in manifest.entries.filter { it.type == "file" }) {
+                val expectedScope = scopes.filter { entry.path.startsWith(it.path + "/") }.maxByOrNull { it.path.length }?.id
+                for (block in entry.chunks.orEmpty()) require(block.scope_id == expectedScope) { "QZRA 1.3 chunk scope does not match its protected folder: ${entry.path}" }
+            }
+            for (block in physical.values) require(block.scope_id == null || block.scope_id in scopeById) { "Chunk references an unknown protected-folder scope" }
         }
         var cursor = 0L
         for (block in physical.values.sortedBy { it.offset }) {
@@ -570,24 +787,74 @@ object ArchiveEngine {
         else -> element
     }
 
-    private fun decryptChunk(encoded: ByteArray, block: Chunk, key: ByteArray): ByteArray {
-        val nonce = block.nonce ?: error("Encrypted QZRA chunk is missing nonce")
-        val prefix = "QZRA-1.2-CHUNK\u0000".toByteArray(Charsets.US_ASCII)
-        val method = block.compression.toByteArray(Charsets.US_ASCII)
-        val aad = ByteBuffer.allocate(prefix.size + 8 + 32 + method.size)
-            .put(prefix)
-            .putLong(block.size)
-            .put(hexToBytes(block.sha256))
-            .put(method)
-            .array()
+    private fun authenticateManifestForWrite(key: ByteArray, nonce: ByteArray, canonicalManifest: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        cipher.updateAAD(canonicalManifest)
+        // AES-GCM over an empty plaintext produces only the 16-byte authentication tag.
+        return cipher.doFinal(ByteArray(0))
+    }
+
+    private fun deriveV13Subkey(masterKey: ByteArray, purpose: String): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(masterKey, "HmacSHA256"))
+        return mac.doFinal("QZRA-1.3-SUBKEY\u0000$purpose".toByteArray(Charsets.US_ASCII))
+    }
+
+    private fun manifestAad(salt: ByteArray, nonce: ByteArray, flags: Int, reserved: Int): ByteArray {
+        val prefix = "QZRA-1.3-MANIFEST\u0000".toByteArray(Charsets.US_ASCII)
+        return ByteBuffer.allocate(prefix.size + 2 + 2 + 4 + 4 + 16 + 12)
+            .put(prefix).putShort(1.toShort()).putShort(3.toShort()).putInt(flags).putInt(reserved).put(salt).put(nonce).array()
+    }
+
+    private fun scopeCheckAad(scopeId: String, path: String): ByteArray =
+        "QZRA-1.3-SCOPE-CHECK\u0000".toByteArray(Charsets.US_ASCII) + hexToBytes(scopeId) + path.toByteArray(Charsets.UTF_8)
+
+    private fun encryptAead(plain: ByteArray, key: ByteArray, nonce: ByteArray, aad: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        cipher.updateAAD(aad)
+        return cipher.doFinal(plain)
+    }
+
+    private fun decryptAead(cipherText: ByteArray, key: ByteArray, nonce: ByteArray, aad: ByteArray): ByteArray {
         try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, hexToBytes(nonce)))
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
             cipher.updateAAD(aad)
-            return cipher.doFinal(encoded)
-        } catch (_: AEADBadTagException) {
-            throw IllegalArgumentException("Wrong password or encrypted QZRA chunk authentication failed")
+            return cipher.doFinal(cipherText)
+        } catch (error: AEADBadTagException) {
+            throw IllegalArgumentException("Wrong password or QZRA authentication failed", error)
         }
+    }
+
+    private fun encryptChunk(
+        compressed: ByteArray, originalSize: Long, digest: String, compression: String,
+        key: ByteArray, nonce: ByteArray, minor: Int, scopeId: String?
+    ): ByteArray {
+        val aad = if (minor == 3) chunkAadV13(originalSize, digest, compression, scopeId)
+        else chunkAadV12(originalSize, digest, compression)
+        return encryptAead(compressed, key, nonce, aad)
+    }
+
+    private fun decryptChunk(encoded: ByteArray, block: Chunk, key: ByteArray, minor: Int): ByteArray {
+        val nonce = block.nonce ?: error("Encrypted QZRA chunk is missing nonce")
+        val aad = if (minor == 3) chunkAadV13(block.size, block.sha256, block.compression, block.scope_id)
+        else chunkAadV12(block.size, block.sha256, block.compression)
+        return decryptAead(encoded, key, hexToBytes(nonce), aad)
+    }
+
+    private fun chunkAadV12(size: Long, digest: String, compression: String): ByteArray {
+        val prefix = "QZRA-1.2-CHUNK\u0000".toByteArray(Charsets.US_ASCII)
+        return ByteBuffer.allocate(prefix.size + 8 + 32 + compression.length)
+            .put(prefix).putLong(size).put(hexToBytes(digest)).put(compression.toByteArray(Charsets.US_ASCII)).array()
+    }
+
+    private fun chunkAadV13(size: Long, digest: String, compression: String, scopeId: String?): ByteArray {
+        val prefix = "QZRA-1.3-CHUNK\u0000".toByteArray(Charsets.US_ASCII)
+        val scope = (scopeId ?: "-").toByteArray(Charsets.US_ASCII)
+        return ByteBuffer.allocate(prefix.size + 8 + 32 + compression.length + 1 + scope.size)
+            .put(prefix).putLong(size).put(hexToBytes(digest)).put(compression.toByteArray(Charsets.US_ASCII)).put(0.toByte()).put(scope).array()
     }
 
     private fun hexToBytes(value: String): ByteArray {

@@ -1,31 +1,30 @@
 # Kotlin clients — development status
 
-The repository now contains four Gradle modules:
+The repository contains four Gradle modules: `:core` (shared Kotlin/JVM engine), `:androidApp` (native Android/SAF client), `:desktopApp` (JVM Swing client), and `:sdk` (pre-1.0 public facade).
 
-- `:core`: Kotlin/JVM implementation shared by Android and desktop.
-- `:androidApp`: native Android application using the Storage Access Framework for file selection and destination access.
-- `:desktopApp`: Java Swing desktop application that runs on the JVM (Windows, Linux and macOS).
-- `:sdk`: pre-1.0 public Kotlin/JVM facade.
+## QZRA compatibility
 
-## QZRA compatibility in the current Kotlin client
+The Kotlin Core source now reads and writes QZRA 1.0–1.3. The default writer remains QZRA 1.1. A non-empty archive password writes authenticated AES-256-GCM QZRA 1.2; `encryptMetadata=true` writes QZRA 1.3 with encrypted manifest metadata. The QZRA 1.3 writer/reader includes the format-defined scrypt parameters, AES-256-GCM manifest envelope, HMAC-SHA-256 purpose-separated keys, scope-bound chunk AAD, independent folder-password scopes and scope-aware deduplication (maximum 32 protected folders).
 
-The Kotlin core writes interoperable, unencrypted QZRA 1.1 chunked archives using the deterministic gear chunking constants, zlib-or-store selection, SHA-256 chunk/file checksums and within-archive duplicate chunk references. It reads QZRA 1.0 and 1.1 and authenticated/encrypted QZRA 1.2. QZRA 1.2 uses the format-defined scrypt parameters (N=32768, r=8, p=1), AES-256-GCM manifest authentication and per-chunk authenticated encryption. The `:core` module uses Bouncy Castle's audited SCrypt implementation and the platform AES/GCM provider; it does not introduce a custom cryptographic construction.
+The Core APIs accept folder passwords on `list`, `browse`, `preview`, `verify`, `extractSelected`, `extract` and `compareContent`. The SDK facade exposes QZRA 1.3 creation/verification/extraction and separate folder-password maps. Python-generated QZRA 1.3 golden-fixture tests check manifest confidentiality, master-password failure, independent folder unlock, and payload verification. Kotlin-writer tests check the hidden entry count, encrypted paths, folder lock behavior and extraction.
 
-The core exposes `browse(archive, directoryPath, password)` for immediate virtual-directory children, `preview(archive, path, maxBytes, password)` for bounded in-memory previews that still verify the complete file, `extractSelected(...)` for a file or directory subtree, and `verify(...)` for the full archive. `extractSelected` enforces file-count/byte quotas, path validation, symlink guards, temporary-file writes and atomic publication. The preview API reads the payload block-by-block; it does not materialize the selected file or the archive tree on disk.
+**Validation boundary:** Kotlin source and JUnit tests are authored but have not been compiled or run in this workspace. The fixture tests must pass in GitHub Actions before cross-language interoperability is certified. QZRA 1.3 is still a development format and has not received an independent cryptographic audit.
 
-The Android UI provides interactive folder navigation, file action menus, text/image/PDF first-page preview, selected file extraction, selected folder extraction and complete archive extraction. Text preview is bounded at 2 MiB; image/PDF preview is bounded at 16 MiB. PDF rendering uses a short-lived private-cache file because Android `PdfRenderer` requires a file descriptor. Files are fully integrity-checked even when the returned preview bytes are truncated. The archive container itself is staged in private cache to support random access from Android document providers.
+## Android integration
 
-The Kotlin client does not yet write encrypted archives: Android/desktop creation remains unencrypted QZRA 1.1. Detached signatures, recovery sidecars and snapshot repositories remain Python-reference features. QZRA 1.0 legacy blocks larger than 16 MiB are rejected in the Kotlin reader. These clients are not production-certified; Android device/emulator, low-storage, lifecycle, large-file and independent security tests remain outstanding.
+The Android UI exposes QZRA 1.3 metadata hiding and one independent protected-folder scope during archive creation. It prompts for the archive master password at open, then requests the matching folder password when the user attempts to preview, verify or extract a protected folder. The UI does not persist any archive/folder password. The operation center persists the last 100 secret-free events, shows the current operation and elapsed time while the Activity is alive, counts successes/failures/interrupted operations, and marks a prior process's active operation as interrupted after an app-process restart.
 
-Golden tests include Python-generated QZRA 1.0, 1.1 and encrypted 1.2 fixtures. Kotlin unit tests cover navigation, bounded verified preview, selected file/directory extraction and encrypted interoperability/wrong-password behavior. Gradle/JUnit results remain pending until CI runs.
+This operation center is **not** a WorkManager/foreground-service job engine: active work is not guaranteed to survive process death, and pause/resume/cancel controls are not implemented in the Android UI. The persistent history makes interruption visible; it does not resume file operations.
 
-## CI
+## Desktop scope
 
-`.github/workflows/platform-builds.yml` installs JDK 17, Gradle 8.9 and Android API 35, runs Kotlin core/SDK tests, builds a desktop distribution and assembles a debug APK. The workflow is configured but has not been observed running on GitHub until this repository is pushed and Actions executes successfully.
+The Kotlin Desktop UI supports basic create, inspect/verify, compare and extract. Its create workflow currently writes default QZRA 1.1; encrypted QZRA 1.2/1.3 and folder-scope operations are available through Core/SDK APIs but are not fully surfaced in desktop dialogs.
 
-## Local commands
+## GitHub Actions build
 
-With JDK 17, Gradle 8.9 and Android SDK API 35 installed:
+`.github/workflows/platform-builds.yml` installs JDK 17, Gradle 8.9 and Android API 35 on GitHub-hosted runners. It runs `:core:test`, `:sdk:test`, creates the desktop distribution on Windows/Linux/macOS, and builds/tests the Android debug APK. Local absence of Gradle/Android SDK is not a source blocker; **the remote workflow result is the acceptance gate**. Until Actions completes, Kotlin compilation, JUnit results, APK generation and desktop packaging are not claimed as passed.
+
+## Local commands (optional)
 
 ```sh
 gradle :core:test :sdk:test :desktopApp:installDist

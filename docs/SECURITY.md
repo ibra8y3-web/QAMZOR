@@ -5,7 +5,7 @@
 ### Assets to protect
 
 - Original file contents and their integrity during archive and repository operations.
-- Archive path names and metadata (not confidential in QZRA 1.2).
+- Archive path names and metadata (visible in QZRA 1.2; encrypted in QZRA 1.3).
 - Encrypted archive plaintext and the passphrases used to derive its keys.
 - Ed25519 signing private keys and the trusted public-key identity used for verification.
 - Repository snapshot manifests and content-addressed objects.
@@ -25,7 +25,9 @@
 - Users choose strong archive/key passphrases and distribute trusted verification public keys through an authenticated channel.
 - A compromised host, malicious administrator, stolen unlocked credentials, and hostile local processes racing filesystem operations are outside the current protection guarantee.
 - Repository catalog/manifests are integrity-checked against one another but are not authenticated against an attacker able to rewrite both; `.qzd` deltas must be signed and verified separately when transferred over an untrusted channel.
-- QZRA 1.2 authenticates payloads and manifest metadata, but does not conceal the manifest or filenames.
+- QZRA 1.2 authenticates payloads and manifest metadata, but does not conceal the manifest or filenames. QZRA 1.3 encrypts the complete manifest and hides the true entry count.
+- QZRA 1.3 folder scopes use independent scrypt salts and AES-256-GCM keys. A folder password is required for payload reads in that scope; the archive master password is still required to decrypt the manifest. The deepest nested protected folder takes precedence.
+- QZRA 1.3 exposes total archive length and encrypted-manifest length; size/access-pattern leakage is not eliminated.
 
 ## Current protections
 
@@ -36,7 +38,7 @@
 - File, chunk, manifest, entry-count and payload bounds are checked before exposing archive entries.
 - Partial payload overlaps are rejected. Shared ranges must match exactly and carry identical content metadata.
 - Compression workers have a bounded pending queue. At most `2 * workers` chunks are queued, with a configurable worker limit of 32.
-- Optional QZRA 1.2 encryption uses AES-256-GCM from the audited `cryptography` package, scrypt password derivation, per-chunk random nonces, authenticated chunk metadata and a separate manifest authentication tag.
+- Optional QZRA 1.2/1.3 encryption uses AES-256-GCM from the `cryptography` package and scrypt password derivation. QZRA 1.3 binds its encrypted manifest to the header and binds chunks to their folder scope. The format has not received an independent cryptographic audit.
 - Detached archive signatures use Ed25519 from `cryptography`; verification checks the archive size, SHA-256 digest, signature and caller-supplied public-key fingerprint.
 - Detached recovery sidecars use XOR parity and per-block SHA-256 checks. They can recover at most one damaged block per parity group and always write to a separate output path.
 - Archive creation and individual extracted files use temporary files before publication.

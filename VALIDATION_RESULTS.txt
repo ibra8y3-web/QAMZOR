@@ -1,0 +1,45 @@
+QAMZOR 0.7.2-dev — validation results
+Date: 2026-11-03
+
+Python unit tests:
+  PYTHONPATH=src python -m pytest -q
+  Result: PASS; 90 passed, 9 subtests passed.
+
+Python syntax/bytecode compilation:
+  python -m compileall -q src tests tools
+  python -m py_compile src/qamzor/cloud_providers.py src/qamzor/cli.py src/qamzor/__init__.py tests/test_cloud_providers.py
+  Result: PASS.
+
+CLI:
+  PYTHONPATH=src python -m qamzor.cli --help
+  PYTHONPATH=src python -m qamzor.cli cloud-provider --help
+  Result: PASS; Drive, Dropbox, OneDrive and S3 push/pull commands are exposed.
+
+Python wheel:
+  qamzor-0.7.2.dev0-py3-none-any.whl
+  Result: built successfully; SHA-256 recorded in dist/SHA256SUMS.
+
+Cloud provider tests:
+  Local adapter tests cover integrity sidecars, verified restore, overwrite protection,
+  credential requirements, request signing and S3 multipart lifecycle.
+  Real provider accounts were not available; no live cloud roundtrip is claimed.
+
+QZRA 1.3 Kotlin source:
+  Kotlin Core read/write implementation and Kotlin tests against the Python-produced
+  golden fixture were added. A local kotlinc syntax scan found no parser diagnostics,
+  but this is NOT a successful Gradle compilation or JUnit run.
+
+Android:
+  QZRA 1.3 create/unlock source and persistent operation-history source were updated.
+  APK build, Android unit tests, emulator tests and device tests were NOT run locally.
+
+GitHub Actions:
+  .github/workflows/platform-builds.yml provisions JDK 17, Gradle 8.9 and Android SDK API 35;
+  it defines Kotlin Core/SDK and cross-platform desktop jobs, plus Android APK/unit-test job.
+  No remote GitHub Actions result is available in this delivery.
+
+Not independently certified:
+  - Kotlin/Android QZRA 1.3 interoperability until the Gradle/JUnit workflow passes.
+  - Live Google Drive, Dropbox, OneDrive and S3 integration with real credentials.
+  - Android durable background jobs, pause/resume/cancel controls.
+  - Independent cryptographic/security audit or production certification.

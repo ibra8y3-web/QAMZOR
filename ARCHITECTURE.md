@@ -10,6 +10,7 @@ qz CLI
          +-- QZRA 1.0 legacy block reader
          +-- QZRA 1.1 content-defined chunked writer/reader
          +-- QZRA 1.2 AES-256-GCM encrypted chunks + authenticated manifest
+         +-- QZRA 1.3 encrypted manifest + independent protected-folder scopes (Python reference only)
          +-- deterministic chunk splitter (64 KiB / 256 KiB / 1 MiB)
          +-- bounded ordered compression scheduler (1–32 workers)
          +-- within-archive content-addressed deduplication
@@ -57,7 +58,7 @@ Desktop Swing UI ----------+---- Kotlin/JVM QZRA client core ---- QZRA 1.1
 Kotlin/JVM SDK ------------+          +-- create/list/verify/extract
 ```
 
-The Kotlin client is a separately implemented transitional engine: it writes QZRA 1.1 and reads QZRA 1.0/1.1, but rejects encrypted QZRA 1.2. Python-generated Kotlin-reader fixtures are included for QZRA 1.0 and 1.1. These fixtures and authored Kotlin tests still require a real Gradle CI run. The target long-term architecture remains one audited Rust core with stable bindings; until that exists, cross-language golden fixtures are required to prevent format drift.
+The Kotlin client is a separately implemented transitional engine: it writes QZRA 1.1 by default and authenticated AES-256-GCM QZRA 1.2 when a password is supplied; it reads QZRA 1.0/1.1/1.2. The Python reference engine additionally writes and reads QZRA 1.3 encrypted manifests and independent folder scopes. Kotlin QZRA 1.3 interoperability is not implemented and remains an explicit cross-platform blocker. The target long-term architecture remains one audited Rust core with stable bindings; until that exists, cross-language golden fixtures are required to prevent format drift.
 
 ## Target architecture
 

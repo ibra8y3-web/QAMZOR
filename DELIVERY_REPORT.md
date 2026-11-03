@@ -94,3 +94,71 @@ The source tree now includes an explicit conversion operation (`convertToQzra` /
 - The Android workflow verifies the new archive before offering it for saving. Inputs remain untouched.
 - Added Kotlin regression tests and Python CLI tests. Python suite now passes **60/60**. Installed package smoke test converted a mixed file/folder set, verified the archive, listed entries, extracted them, and compared restored bytes against the originals.
 - Kotlin JUnit/Gradle compilation and Android APK/device validation remain pending the GitHub Actions run. This delivery is source code, not a newly built APK.
+
+## QZRA 1.3 reference implementation addendum — 2026-11-03
+
+- Python reference engine and CLI implement QZRA 1.3 encrypted manifests, hidden entry counts, independent password-protected folder scopes (up to 32), and AES-256-GCM authenticated payload chunks.
+- Scrypt KDF roots are separated into `manifest`, `root-chunks`, `folder-check`, and `folder-chunks` AES subkeys using HMAC-SHA-256 domain separation.
+- Python supports create/list/inspect/search/preview/verify/extract for QZRA 1.3, including CLI protected password-file workflows. A Python-generated protected-folder golden archive is staged in `fixtures/qzra-1.3/` and copied into Kotlin test resources for future interoperability work.
+- Latest local Python suite: **66/66 passed** after the domain-separated key schedule change; `compileall` and manual CLI round-trip are included in the QZRA 1.3 validation report.
+- **Platform boundary:** Kotlin Core, Android, Desktop and the Kotlin SDK still support only QZRA through 1.2. They do not open or create 1.3 archives yet. Android UI does not expose per-folder password assignment/unlock.
+- Gradle/JUnit, Android APK, cross-language QZRA 1.3 interoperability and device validation remain pending. No independent cryptographic audit has been performed.
+
+See [`QZRA_1_3_REPORT.md`](QZRA_1_3_REPORT.md) and [`docs/QZRA_FORMAT.md`](docs/QZRA_FORMAT.md).
+
+## Product feature expansion — 2026-11-03
+
+The Python reference engine/CLI was extended with Smart Exclusions, split volumes, archive comparison, bounded Office Open XML text preview, a WebDAV backup adapter and a persistent JobCenter API. Existing encrypted metadata/per-folder scopes (QZRA 1.3), recovery, Ed25519 detached signatures and deduplication were retained.
+
+- Smart Exclusions: positive glob patterns, `--exclude-from`, root and nested `.qzignore`; negated patterns are rejected.
+- Split/Join: `.qzset` manifest and sequential volumes with per-volume and total SHA-256 checks; atomic joined-file publication.
+- Compare: path/type/size/hash metadata comparison without extraction. QZRA 1.3 requires supplied master passwords; payload integrity verification remains a separate `qz verify` operation.
+- Office preview: DOCX/XLSX/PPTX text extraction after complete source-file verification and within source/package expansion limits. Not a layout renderer.
+- Cloud: WebDAV-compatible HTTPS object upload/download with a SHA-256 sidecar; downloads verify and publish atomically. Tested against a local loopback WebDAV test server, not an external provider.
+- JobCenter: bounded worker pool, progress records, safe-checkpoint pause/resume/cancel, owner-only job files and password redaction. Restart converts unfinished jobs to `interrupted` rather than unsafe auto-resume.
+
+These new features are Python reference-core/CLI/API capabilities only. They are not yet integrated into the Android/Desktop Kotlin clients. QZRA 1.3 remains Python-only until Kotlin interoperability is implemented and tested. Cloud sidecar checksums provide corruption detection, not authenticity against a malicious remote; use detached Ed25519 signatures and trusted public-key verification for that threat model.
+
+## Product feature expansion delivery — 2026-11-03
+
+### Added to Python reference core / CLI / API
+
+- Smart Exclusions with repeatable glob rules, external rule files and root/nested `.qzignore`; unsupported negations are rejected.
+- Split/Join volume format with unique generation directories, SHA-256 per part and full archive, duplicate-key-safe descriptor parsing, bounded part counts, staged join and atomic publication.
+- Archive Compare for added/removed/changed/unchanged paths using authenticated manifest metadata. Payload verification remains a separate `qz verify` operation.
+- Bounded DOCX/XLSX/PPTX text preview with source-size, member-count, expanded-size, compression-ratio, duplicate-entry and XML DTD/entity restrictions.
+- WebDAV HTTPS push/pull with runtime-only credentials, portable object names, sidecar size/SHA-256 metadata, streamed upload digest comparison, staged download and atomic publication. Verified against a local loopback WebDAV test server only; no external provider integration was validated.
+- Python JobCenter API with bounded workers, progress, safe-checkpoint pause/resume/cancel, secret-filtered persisted state and interrupted-job detection after process restart.
+- Existing QZRA 1.3 encrypted metadata and per-folder password scopes, XOR recovery sidecars, detached Ed25519 signatures and content deduplication remain available in the Python reference engine.
+
+### Final local validation
+
+- Full Python unit suite: **80 tests passed**.
+- `python -m compileall -q src tests tools`: passed.
+- Wheel build using the locally installed build backend: passed.
+- Wheel installed into a separate target directory; `qamzor` import and public exports for `WebDavBackup`, `JobCenter`, `split_archive`, `join_archive`, `compare_archives`, and `preview_office_document` verified.
+- Additional regression tests cover symlinked split-output parents and cloud sidecar filename length.
+
+### Platform boundary / limitations
+
+- These additions are currently Python reference Core/CLI/API features. They are not yet ported into Kotlin Core, Android UI or Desktop UI. The installed Android application does not gain these features from this Python package update.
+- Cloud currently means WebDAV over HTTPS, not native S3/Drive/Dropbox/OneDrive integration. Only a local loopback WebDAV server was exercised.
+- Office preview extracts text only; it does not render native Office layout, macros or embedded media.
+- JobCenter is a Python API; Android foreground-service and GUI job controls are not included.
+- Archive Compare compares manifest records; payload bytes must be checked separately with `qz verify`.
+- Volume checksums detect accidental corruption but do not authenticate an adversarially replaced set; use a trusted Ed25519 signature.
+- No GitHub Actions run, Gradle/JUnit run, new APK, native desktop installers, or independent security audit was performed as part of this delivery.
+
+Arabic operator guide: `docs/PRODUCT_FEATURES_AR.md`.
+
+---
+
+## Source amendment — QAMZOR 0.7.2-dev (2026-11-03)
+
+This section supersedes the 0.7.0-dev platform/cloud limitations above:
+
+- Kotlin Core source now contains QZRA 1.3 reader/writer and Android source includes metadata-hiding creation plus a single protected-folder password scope and unlock prompts. Python golden-fixture/JUnit tests are authored; GitHub Gradle/JUnit success is still pending.
+- Android now persists up to 100 secret-free operation events and marks prior-process active operations as interrupted. This is history and interruption visibility, not durable WorkManager processing or automatic task resume.
+- Python Core/CLI now contains Google Drive, Dropbox, OneDrive and S3-compatible REST adapters. OAuth access tokens and S3 keys are supplied at runtime. S3 supports multipart uploads above 5 GiB. Local tests do not substitute for live provider account qualification.
+- Current Python regression result after provider tests: 90 passed and 9 subtests passed.
+- The Android debug APK is not attached to this source amendment; the repository's GitHub Actions workflow remains responsible for installing JDK/Gradle/Android SDK, running tests and assembling the APK after push.

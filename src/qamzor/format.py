@@ -5,6 +5,8 @@ This is the first executable reference implementation, not the final Rust core.
 from __future__ import annotations
 
 import hashlib
+import fnmatch
+import hmac
 import io
 import json
 import os
@@ -25,7 +27,7 @@ from .scheduler import bounded_ordered_map
 
 MAGIC = b"QZRA\r\n\x1a\n"
 MAJOR_VERSION = 1
-MINOR_VERSION = 2
+MINOR_VERSION = 3
 MAX_CHUNK_SIZE = 1024 * 1024
 MAX_CHUNK_COMPRESSED_SIZE = MAX_CHUNK_SIZE + 65536
 SCRYPT_N = 1 << 15
@@ -37,6 +39,9 @@ MAX_MANIFEST_SIZE = 64 * 1024 * 1024
 MAX_ENTRIES = 1_000_000
 IO_CHUNK_SIZE = 1024 * 1024
 SUPPORTED_FLAGS = 0
+V13_MANIFEST_MAGIC = b"QZ13"
+V13_MANIFEST_PREFIX = struct.Struct(">4s16s12s")
+MAX_FOLDER_SCOPES = 32
 
 
 class QamzorError(Exception):
@@ -72,6 +77,11 @@ def _derive_encryption_key(password: str, salt: bytes) -> bytes:
         raise QamzorError("Could not derive the archive encryption key") from exc
 
 
+def _derive_v13_subkey(master_key: bytes, purpose: bytes) -> bytes:
+    """Derive a purpose-separated 256-bit key for each QZRA 1.3 AEAD domain."""
+    return hmac.new(master_key, b"QZRA-1.3-SUBKEY\0" + purpose, hashlib.sha256).digest()
+
+
 def _aesgcm_class():
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -82,6 +92,19 @@ def _aesgcm_class():
 
 def _chunk_aad(size: int, digest: str, compression: str) -> bytes:
     return b"QZRA-1.2-CHUNK\0" + struct.pack(">Q", size) + bytes.fromhex(digest) + compression.encode("ascii")
+
+
+def _chunk_aad_v13(size: int, digest: str, compression: str, scope_id: Optional[str]) -> bytes:
+    scope = (scope_id or "-").encode("ascii")
+    return b"QZRA-1.3-CHUNK\0" + struct.pack(">Q", size) + bytes.fromhex(digest) + compression.encode("ascii") + b"\0" + scope
+
+
+def _manifest_aad_v13(salt: bytes, nonce: bytes, flags: int, reserved: int) -> bytes:
+    return b"QZRA-1.3-MANIFEST\0" + struct.pack(">HHII", MAJOR_VERSION, 3, flags, reserved) + salt + nonce
+
+
+def _scope_check_aad(scope_id: str, path: str) -> bytes:
+    return b"QZRA-1.3-SCOPE-CHECK\0" + bytes.fromhex(scope_id) + path.encode("utf-8")
 
 
 def _canonical_manifest_bytes(manifest: dict) -> bytes:
@@ -110,6 +133,7 @@ class ArchiveChunk:
     compression: str
     sha256: str
     nonce: Optional[str] = None
+    scope_id: Optional[str] = None
 
     @classmethod
     def from_json(cls, value: object) -> "ArchiveChunk":
@@ -132,11 +156,16 @@ class ArchiveChunk:
         nonce = value.get("nonce")
         if nonce is not None and (not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{24}", nonce)):
             raise FormatError("Chunk AES-GCM nonce must be 12-byte lowercase hexadecimal")
+        scope_id = value.get("scope_id")
+        if scope_id is not None and (not isinstance(scope_id, str) or not re.fullmatch(r"[0-9a-f]{32}", scope_id)):
+            raise FormatError("Chunk scope_id must be 16-byte lowercase hexadecimal")
+        if scope_id is not None and nonce is None:
+            raise FormatError("Folder-scoped chunks must be encrypted")
         if compression == "store" and compressed_size != size + (16 if nonce else 0):
             raise FormatError("Stored chunks must match their original size plus any AES-GCM tag")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise FormatError("Chunk SHA-256 digest is missing or malformed")
-        return cls(offset, compressed_size, size, compression, digest, nonce)
+        return cls(offset, compressed_size, size, compression, digest, nonce, scope_id)
 
     def to_json(self) -> dict:
         result = {
@@ -148,6 +177,8 @@ class ArchiveChunk:
         }
         if self.nonce is not None:
             result["nonce"] = self.nonce
+        if self.scope_id is not None:
+            result["scope_id"] = self.scope_id
         return result
 
 
@@ -283,9 +314,92 @@ def _validate_entry_set(entries: list[ArchiveEntry]) -> None:
                 raise FormatError(f"File entry has child paths: {entry.path!r}")
 
 
-def _walk_sources(sources: Iterable[os.PathLike | str], archive_path: Path) -> list[tuple[str, Path, str]]:
+def _parse_exclude_patterns(patterns: Optional[Iterable[str]]) -> list[str]:
+    parsed: list[str] = []
+    for raw in patterns or ():
+        if not isinstance(raw, str):
+            raise QamzorError("Exclude patterns must be strings")
+        value = raw.strip().replace("\\", "/")
+        if not value or value.startswith("#"):
+            continue
+        if value.startswith("!"):
+            raise QamzorError("Negated exclude patterns are not supported; use a narrower positive pattern")
+        if len(value) > 1024 or value in {".", "..", "/"}:
+            raise QamzorError(f"Invalid exclude pattern: {raw!r}")
+        parsed.append(value.lstrip("/"))
+        if len(parsed) > 10_000:
+            raise QamzorError("At most 10,000 exclude patterns are allowed")
+    return parsed
+
+
+def _matches_exclusion(relative: str, is_directory: bool, patterns: list[str]) -> bool:
+    """Match simple gitignore-style patterns relative to each selected root.
+
+    A pattern containing '/' matches the whole relative path; a pattern without
+    '/' matches any path component. A trailing slash excludes a directory and
+    everything below it. Negation is deliberately rejected by the parser.
+    """
+    relative = relative.strip("/")
+    if not relative:
+        return False
+    parts = relative.split("/")
+    for raw_pattern in patterns:
+        directory_only = raw_pattern.endswith("/")
+        pattern = raw_pattern.rstrip("/") if directory_only else raw_pattern
+        if not pattern:
+            continue
+        candidates = [relative] if "/" in pattern else parts
+        matched = any(fnmatch.fnmatchcase(candidate, pattern) for candidate in candidates)
+        if not matched:
+            continue
+        if directory_only:
+            # Directory patterns can match any ancestor component.
+            for index in range(1, len(parts) + 1):
+                ancestor = "/".join(parts[:index])
+                if fnmatch.fnmatchcase(ancestor, pattern) and (is_directory or index < len(parts)):
+                    return True
+            continue
+        return True
+    return False
+
+
+def _matches_exclusion_contexts(relative: str, is_directory: bool, contexts: list[tuple[str, list[str]]]) -> bool:
+    for prefix, patterns in contexts:
+        if not patterns:
+            continue
+        if prefix:
+            if relative == prefix:
+                local = ""
+            elif relative.startswith(prefix + "/"):
+                local = relative[len(prefix) + 1:]
+            else:
+                continue
+        else:
+            local = relative
+        if _matches_exclusion(local, is_directory, patterns):
+            return True
+    return False
+
+
+def _read_source_excludes(root: Path) -> list[str]:
+    ignore_file = root / ".qzignore"
+    try:
+        if ignore_file.is_symlink() or not ignore_file.is_file():
+            return []
+        if ignore_file.stat().st_size > 1024 * 1024:
+            raise QamzorError(f".qzignore is larger than 1 MiB: {ignore_file}")
+        return _parse_exclude_patterns(ignore_file.read_text(encoding="utf-8").splitlines())
+    except UnicodeDecodeError as exc:
+        raise QamzorError(f".qzignore must be UTF-8 text: {ignore_file}") from exc
+
+
+def _walk_sources(
+    sources: Iterable[os.PathLike | str], archive_path: Path,
+    exclude_patterns: Optional[Iterable[str]] = None,
+) -> list[tuple[str, Path, str]]:
     items: list[tuple[str, Path, str]] = []
     excluded = archive_path.resolve(strict=False)
+    global_patterns = _parse_exclude_patterns(exclude_patterns)
     for source_value in sources:
         source = Path(source_value).expanduser()
         try:
@@ -304,13 +418,21 @@ def _walk_sources(sources: Iterable[os.PathLike | str], archive_path: Path) -> l
             raise SafetyError(f"Cannot archive filesystem root: {source}")
         if stat.S_ISREG(st.st_mode):
             _validate_archive_path(base)
-            items.append((base, source, "file"))
+            if not _matches_exclusion(base, False, global_patterns):
+                items.append((base, source, "file"))
             continue
         _validate_archive_path(base)
+        source_patterns = global_patterns + _read_source_excludes(source)
         items.append((base, source, "directory"))
+        context_map: dict[Path, list[tuple[str, list[str]]]] = {source: [("", source_patterns)]}
         for root, dirs, files in os.walk(source, topdown=True, followlinks=False):
             root_path = Path(root)
             rel_root = root_path.relative_to(source)
+            source_prefix = rel_root.as_posix() if rel_root.parts else ""
+            contexts = list(context_map.get(root_path, [("", source_patterns)]))
+            local_ignore = _read_source_excludes(root_path) if rel_root.parts else []
+            if local_ignore:
+                contexts.append((source_prefix, local_ignore))
             safe_dirs: list[str] = []
             for dirname in sorted(dirs):
                 child = root_path / dirname
@@ -319,7 +441,11 @@ def _walk_sources(sources: Iterable[os.PathLike | str], archive_path: Path) -> l
                     raise SafetyError(f"Symbolic links are not supported: {child}")
                 if not stat.S_ISDIR(child_st.st_mode):
                     raise SafetyError(f"Unexpected non-directory in directory traversal: {child}")
+                relative_child = "/".join(filter(None, (source_prefix, dirname)))
+                if _matches_exclusion_contexts(relative_child, True, contexts):
+                    continue
                 safe_dirs.append(dirname)
+                context_map[child] = list(contexts)
                 rel = PurePosixPath(base, *rel_root.parts, dirname).as_posix()
                 _validate_archive_path(rel)
                 items.append((rel, child, "directory"))
@@ -333,6 +459,9 @@ def _walk_sources(sources: Iterable[os.PathLike | str], archive_path: Path) -> l
                     raise SafetyError(f"Symbolic links are not supported: {child}")
                 if not stat.S_ISREG(child_st.st_mode):
                     raise SafetyError(f"Only regular files are supported: {child}")
+                relative_file = "/".join(filter(None, (source_prefix, filename)))
+                if filename == ".qzignore" or _matches_exclusion_contexts(relative_file, False, contexts):
+                    continue
                 rel = PurePosixPath(base, *rel_root.parts, filename).as_posix()
                 _validate_archive_path(rel)
                 items.append((rel, child, "file"))
@@ -358,12 +487,21 @@ def create_archive(
     overwrite: bool = False,
     workers: int = 1,
     password: Optional[str] = None,
+    encrypt_metadata: bool = False,
+    folder_passwords: Optional[dict[str, str]] = None,
+    exclude_patterns: Optional[Iterable[str]] = None,
+    job_control=None,
 ) -> dict:
-    """Create a QZRA 1.1 chunked archive with content-addressed deduplication.
+    """Create a QZRA archive.
 
-    Content-defined chunks are independently compressed. Equal SHA-256/size
-    chunks share one physical payload range, including across source files.
-    Compression work is ordered and bounded by the worker scheduler.
+    QZRA 1.0 is the legacy single-block format, 1.1 is chunked, 1.2 adds
+    authenticated payload encryption, and 1.3 encrypts the complete manifest
+    (including all names) and supports independently password-locked folders.
+
+    ``folder_passwords`` keys are exact archive-relative directory paths. The
+    archive master password is still required to unlock the encrypted manifest;
+    each folder password then independently unlocks the payloads in that folder
+    and its descendants, with the deepest configured folder taking precedence.
     """
     profile_levels = {"speed": 1, "balanced": 6, "maximum": 9}
     if profile not in profile_levels:
@@ -374,15 +512,22 @@ def create_archive(
         raise QamzorError("Compression level must be an integer between 0 and 9")
     if not isinstance(workers, int) or isinstance(workers, bool) or not 1 <= workers <= 32:
         raise QamzorError("workers must be an integer between 1 and 32")
-    aesgcm = None
-    encryption_salt = None
-    format_minor = 1
-    if password is not None:
-        AESGCM = _aesgcm_class()
-        encryption_salt = secrets.token_bytes(16)
-        encryption_key = _derive_encryption_key(password, encryption_salt)
-        aesgcm = AESGCM(encryption_key)
-        format_minor = 2
+
+    folder_passwords = dict(folder_passwords or {})
+    use_v13 = bool(encrypt_metadata or folder_passwords)
+    if use_v13 and (not isinstance(password, str) or not password):
+        raise QamzorError("QZRA 1.3 requires a non-empty archive master password")
+    if folder_passwords and not use_v13:
+        raise QamzorError("Folder passwords require QZRA 1.3 metadata encryption")
+
+    aesgcm_cls = _aesgcm_class() if password is not None else None
+    encryption_salt = secrets.token_bytes(16) if password is not None else None
+    encryption_key = _derive_encryption_key(password, encryption_salt) if password is not None else None
+    format_minor = 3 if use_v13 else (2 if password is not None else 1)
+    archive_aesgcm = aesgcm_cls(encryption_key) if encryption_key is not None else None
+    manifest_key = _derive_v13_subkey(encryption_key, b"manifest") if use_v13 else None
+    root_chunk_key = _derive_v13_subkey(encryption_key, b"root-chunks") if use_v13 else encryption_key
+
     target = Path(archive_path).expanduser().absolute()
     source_values = list(sources)
     if not source_values:
@@ -390,12 +535,59 @@ def create_archive(
     if target.exists() and not overwrite:
         raise QamzorError(f"Destination already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    items = _walk_sources(source_values, target)
+    items = _walk_sources(source_values, target, exclude_patterns)
     if not items:
         raise QamzorError("No source entries were found")
 
+    total_source_bytes = sum(source.stat().st_size for _, source, kind in items if kind == "file")
+    completed_source_bytes = 0
+
+    def checkpoint(current_file_bytes: int = 0, phase: str = "archive") -> None:
+        if job_control is not None:
+            job_control.checkpoint({
+                "phase": phase,
+                "completed_bytes": completed_source_bytes + current_file_bytes,
+                "total_bytes": total_source_bytes,
+                "completed_entries": sum(1 for _, _, kind in items[:current_item_index] if kind == "file"),
+                "total_entries": sum(1 for _, _, kind in items if kind == "file"),
+            })
+
+    item_kinds = {rel: kind for rel, _, kind in items}
+    folder_scopes: dict[str, dict] = {}
+    scope_keys: dict[str, bytes] = {}
+    if use_v13:
+        if len(folder_passwords) > MAX_FOLDER_SCOPES:
+            raise QamzorError(f"At most {MAX_FOLDER_SCOPES} independently protected folders are allowed per archive")
+        for folder_path, folder_password in sorted(folder_passwords.items()):
+            _validate_archive_path(folder_path)
+            if item_kinds.get(folder_path) != "directory":
+                raise QamzorError(f"Protected folder is not present as a directory in the archive: {folder_path}")
+            if not isinstance(folder_password, str) or not folder_password:
+                raise QamzorError(f"Folder password must be a non-empty string: {folder_path}")
+            scope_id = secrets.token_hex(16)
+            scope_salt = secrets.token_bytes(16)
+            scope_master_key = _derive_encryption_key(folder_password, scope_salt)
+            scope_key = _derive_v13_subkey(scope_master_key, b"folder-chunks")
+            scope_check_key = _derive_v13_subkey(scope_master_key, b"folder-check")
+            check_nonce = secrets.token_bytes(12)
+            check_tag = aesgcm_cls(scope_check_key).encrypt(
+                check_nonce, b"", _scope_check_aad(scope_id, folder_path)
+            )
+            folder_scopes[folder_path] = {
+                "id": scope_id,
+                "path": folder_path,
+                "kdf": {
+                    "name": "scrypt", "n": SCRYPT_N, "r": SCRYPT_R,
+                    "p": SCRYPT_P, "salt": scope_salt.hex(),
+                },
+                "key_check": {"nonce": check_nonce.hex(), "tag": check_tag.hex()},
+            }
+            scope_keys[scope_id] = scope_key
+
     manifest_entries: list[ArchiveEntry] = []
-    chunk_index: dict[tuple[str, int], ArchiveChunk] = {}
+    # Scope is part of the key: the same plaintext chunk protected by two
+    # different folder passwords must never share one ciphertext range.
+    chunk_index: dict[tuple[str, int, Optional[str]], ArchiveChunk] = {}
     data_offset = 0
     total_original = 0
     logical_chunk_bytes = 0
@@ -404,21 +596,32 @@ def create_archive(
     spool = tempfile.TemporaryFile(mode="w+b", dir=str(target.parent))
     temp_output: Optional[str] = None
     try:
-        for rel, source, kind in items:
+        scope_paths_by_length = sorted(folder_scopes, key=len, reverse=True)
+        for current_item_index, (rel, source, kind) in enumerate(items):
+            checkpoint(0, "starting-entry")
             if kind == "directory":
                 manifest_entries.append(ArchiveEntry(rel, "directory", 0))
                 continue
             before = source.stat()
             digest = hashlib.sha256()
             original_size = 0
+            scope_path = next(
+                (candidate for candidate in scope_paths_by_length if rel.startswith(candidate + "/")),
+                None,
+            ) if use_v13 else None
+            scope_id = folder_scopes[scope_path]["id"] if scope_path else None
+            chunk_key = scope_keys.get(scope_id) if scope_id else root_chunk_key
+            chunk_aesgcm = aesgcm_cls(chunk_key) if chunk_key is not None else None
 
             def tracked_chunks():
                 nonlocal original_size
                 with source.open("rb") as input_file:
                     for raw_chunk in iter_file_chunks(input_file):
+                        checkpoint(original_size, "reading-source")
                         original_size += len(raw_chunk)
                         digest.update(raw_chunk)
                         yield raw_chunk
+                checkpoint(original_size, "source-read")
 
             def encode_item(raw_chunk: bytes):
                 return raw_chunk, _encode_chunk(raw_chunk, compression_level)
@@ -429,7 +632,7 @@ def create_archive(
                 encode_item, tracked_chunks(), workers=workers, max_pending=pending_limit
             ):
                 chunk_digest = hashlib.sha256(raw_chunk).hexdigest()
-                key = (chunk_digest, len(raw_chunk))
+                key = (chunk_digest, len(raw_chunk), scope_id)
                 logical_chunks += 1
                 logical_chunk_bytes += len(raw_chunk)
                 existing = chunk_index.get(key)
@@ -439,9 +642,13 @@ def create_archive(
                     continue
                 method, encoded = encoded_result
                 nonce_hex = None
-                if aesgcm is not None:
+                if chunk_aesgcm is not None:
                     nonce = secrets.token_bytes(12)
-                    encoded = aesgcm.encrypt(nonce, encoded, _chunk_aad(len(raw_chunk), chunk_digest, method))
+                    if format_minor == 3:
+                        aad = _chunk_aad_v13(len(raw_chunk), chunk_digest, method, scope_id)
+                    else:
+                        aad = _chunk_aad(len(raw_chunk), chunk_digest, method)
+                    encoded = chunk_aesgcm.encrypt(nonce, encoded, aad)
                     nonce_hex = nonce.hex()
                 ref = ArchiveChunk(
                     offset=data_offset,
@@ -450,6 +657,7 @@ def create_archive(
                     compression=method,
                     sha256=chunk_digest,
                     nonce=nonce_hex,
+                    scope_id=scope_id,
                 )
                 spool.write(encoded)
                 data_offset += len(encoded)
@@ -465,41 +673,72 @@ def create_archive(
                 ArchiveEntry(rel, "file", original_size, sha256=digest.hexdigest(), chunks=tuple(refs))
             )
             total_original += original_size
+            completed_source_bytes += original_size
+            checkpoint(0, "entry-complete")
 
+        checkpoint(0, "finalizing")
         manifest_obj = {
             "format": "QZRA",
             "version": f"{MAJOR_VERSION}.{format_minor}",
             "entries": [entry.to_json() for entry in manifest_entries],
         }
-        if encryption_salt is not None:
+        if format_minor == 2:
             manifest_obj["security"] = {
                 "encryption": "AES-256-GCM",
                 "kdf": {
-                    "name": "scrypt",
-                    "n": SCRYPT_N,
-                    "r": SCRYPT_R,
-                    "p": SCRYPT_P,
-                    "salt": encryption_salt.hex(),
+                    "name": "scrypt", "n": SCRYPT_N, "r": SCRYPT_R,
+                    "p": SCRYPT_P, "salt": encryption_salt.hex(),
                 },
             }
             manifest_nonce = secrets.token_bytes(12)
-            manifest_tag = aesgcm.encrypt(manifest_nonce, b"", _canonical_manifest_bytes(manifest_obj))
-            manifest_obj["manifest_auth"] = {
-                "nonce": manifest_nonce.hex(),
-                "tag": manifest_tag.hex(),
+            manifest_tag = archive_aesgcm.encrypt(manifest_nonce, b"", _canonical_manifest_bytes(manifest_obj))
+            manifest_obj["manifest_auth"] = {"nonce": manifest_nonce.hex(), "tag": manifest_tag.hex()}
+            manifest_plain = _canonical_manifest_bytes(manifest_obj)
+            manifest = manifest_plain
+            header_entry_count = len(manifest_entries)
+        elif format_minor == 3:
+            manifest_obj["security"] = {
+                "encryption": "AES-256-GCM",
+                "manifest_encryption": "AES-256-GCM",
+                "kdf": {
+                    "name": "scrypt", "n": SCRYPT_N, "r": SCRYPT_R,
+                    "p": SCRYPT_P, "salt": encryption_salt.hex(),
+                },
+                "scopes": [folder_scopes[path] for path in sorted(folder_scopes)],
             }
-        manifest = _canonical_manifest_bytes(manifest_obj)
-        if len(manifest) > MAX_MANIFEST_SIZE:
+            manifest_plain = _canonical_manifest_bytes(manifest_obj)
+            if len(manifest_plain) > MAX_MANIFEST_SIZE:
+                raise QamzorError("Generated manifest exceeds the format limit")
+            manifest_salt = encryption_salt
+            manifest_nonce = secrets.token_bytes(12)
+            aad = _manifest_aad_v13(manifest_salt, manifest_nonce, SUPPORTED_FLAGS, 0)
+            encrypted_manifest = aesgcm_cls(manifest_key).encrypt(manifest_nonce, manifest_plain, aad)
+            manifest = V13_MANIFEST_PREFIX.pack(V13_MANIFEST_MAGIC, manifest_salt, manifest_nonce) + encrypted_manifest
+            header_entry_count = 0  # Entry count is deliberately hidden in 1.3.
+        else:
+            manifest = _canonical_manifest_bytes(manifest_obj)
+            header_entry_count = len(manifest_entries)
+
+        if len(manifest) > MAX_MANIFEST_SIZE + V13_MANIFEST_PREFIX.size + 16:
             raise QamzorError("Generated manifest exceeds the format limit")
         _validate_entry_set(manifest_entries)
-        header = HEADER.pack(MAGIC, MAJOR_VERSION, format_minor, SUPPORTED_FLAGS, len(manifest), len(manifest_entries), 0)
+        header = HEADER.pack(
+            MAGIC, MAJOR_VERSION, format_minor, SUPPORTED_FLAGS,
+            len(manifest), header_entry_count, 0
+        )
 
+        checkpoint(0, "publishing")
         fd, temp_output = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
         with os.fdopen(fd, "wb") as output:
             output.write(header)
             output.write(manifest)
             spool.seek(0)
-            shutil.copyfileobj(spool, output, length=IO_CHUNK_SIZE)
+            while True:
+                block = spool.read(IO_CHUNK_SIZE)
+                if not block:
+                    break
+                checkpoint(0, "publishing")
+                output.write(block)
             output.flush()
             os.fsync(output.fileno())
         if overwrite:
@@ -515,7 +754,9 @@ def create_archive(
         return {
             "archive": str(target),
             "format_version": f"{MAJOR_VERSION}.{format_minor}",
-            "encrypted": aesgcm is not None,
+            "encrypted": encryption_key is not None,
+            "metadata_encrypted": format_minor == 3,
+            "protected_folders": len(folder_scopes),
             "entries": len(manifest_entries),
             "files": sum(entry.kind == "file" for entry in manifest_entries),
             "chunks": logical_chunks,
@@ -531,23 +772,42 @@ def create_archive(
         spool.close()
         if temp_output and os.path.exists(temp_output):
             os.unlink(temp_output)
+        for key_bytes in scope_keys.values():
+            # Best-effort key lifecycle hygiene; Python cannot guarantee that
+            # immutable key copies have been removed from interpreter memory.
+            del key_bytes
+        if encryption_key is not None:
+            del encryption_key
 
 
 class QZRAReader:
-    """Validated, read-only access to QZRA 1.0, 1.1 and encrypted 1.2 archives."""
+    """Validated, read-only access to QZRA 1.0, 1.1, encrypted 1.2 and private-metadata 1.3 archives."""
 
-    def __init__(self, archive_path: os.PathLike | str, *, password: Optional[str] = None):
+    def __init__(
+        self,
+        archive_path: os.PathLike | str,
+        *,
+        password: Optional[str] = None,
+        folder_passwords: Optional[dict[str, str]] = None,
+    ):
         self.path = Path(archive_path)
         self._password = password
         self._encryption_key: Optional[bytes] = None
+        self._manifest_key: Optional[bytes] = None
         self._encryption_salt: Optional[bytes] = None
         self._manifest_auth: Optional[dict[str, str]] = None
         self._manifest_auth_data: Optional[bytes] = None
+        self._folder_scopes: dict[str, dict] = {}
+        self._scope_by_id: dict[str, dict] = {}
+        self._scope_keys: dict[str, bytes] = {}
         self.is_encrypted = False
+        self.metadata_encrypted = False
         self._file: BinaryIO = self.path.open("rb")
         try:
             self._load()
-            if password is not None:
+            for folder_path, folder_password in (folder_passwords or {}).items():
+                self.set_folder_password(folder_path, folder_password)
+            if password is not None and self.version_minor == 2:
                 self.set_password(password)
         except Exception:
             self._file.close()
@@ -561,6 +821,8 @@ class QZRAReader:
         self.set_password(self._password)
 
     def set_password(self, password: str) -> None:
+        if self.version_minor == 3:
+            raise QamzorError("QZRA 1.3 requires the master password when the archive is opened")
         if not self.is_encrypted or self._encryption_salt is None or self._manifest_auth is None:
             raise QamzorError("This archive is not encrypted or its authentication metadata is missing")
         key = _derive_encryption_key(password, self._encryption_salt)
@@ -576,8 +838,40 @@ class QZRAReader:
         self._password = password
         self._encryption_key = key
 
+    def set_folder_password(self, folder_path: str, password: str) -> None:
+        """Unlock one QZRA 1.3 folder scope using its independent password."""
+        if self.version_minor != 3:
+            raise QamzorError("Independent folder passwords require QZRA 1.3")
+        _validate_archive_path(folder_path)
+        scope = self._folder_scopes.get(folder_path)
+        if scope is None:
+            raise QamzorError(f"No independently protected folder exists at: {folder_path}")
+        kdf = scope["kdf"]
+        folder_master_key = _derive_encryption_key(password, bytes.fromhex(kdf["salt"]))
+        check_key = _derive_v13_subkey(folder_master_key, b"folder-check")
+        folder_payload_key = _derive_v13_subkey(folder_master_key, b"folder-chunks")
+        check = scope["key_check"]
+        try:
+            _aesgcm_class()(check_key).decrypt(
+                bytes.fromhex(check["nonce"]),
+                bytes.fromhex(check["tag"]),
+                _scope_check_aad(scope["id"], scope["path"]),
+            )
+        except Exception as exc:
+            _raise_authentication_error(exc)
+        self._scope_keys[scope["id"]] = folder_payload_key
+
+    unlock_folder = set_folder_password
+
     def close(self) -> None:
-        self._file.close()
+        if not self._file.closed:
+            self._file.close()
+        # Best-effort release of derived-key references. Python cannot guarantee
+        # erasure of immutable bytes or interpreter/runtime copies in memory.
+        self._scope_keys.clear()
+        self._encryption_key = None
+        self._manifest_key = None
+        self._password = None
 
     def __enter__(self) -> "QZRAReader":
         return self
@@ -603,16 +897,51 @@ class QZRAReader:
             raise FormatError("Archive uses unsupported header flags")
         if reserved != 0:
             raise FormatError("Reserved header field must be zero")
-        if manifest_len > MAX_MANIFEST_SIZE:
+        allowed_manifest_size = MAX_MANIFEST_SIZE + (V13_MANIFEST_PREFIX.size + 16 if minor == 3 else 0)
+        if manifest_len > allowed_manifest_size:
             raise FormatError("Manifest exceeds the maximum permitted size")
-        if entry_count > MAX_ENTRIES:
+        if minor == 3:
+            if entry_count != 0:
+                raise FormatError("QZRA 1.3 header entry count must be zero to avoid metadata leakage")
+        elif entry_count > MAX_ENTRIES:
             raise FormatError("Archive contains too many entries")
         if HEADER_SIZE + manifest_len > self.file_size:
             raise FormatError("Manifest extends beyond end of archive")
         self._file.seek(HEADER_SIZE)
         raw_manifest = self._file.read(manifest_len)
+
+        self.is_encrypted = minor in {2, 3}
+        self.metadata_encrypted = minor == 3
+        if minor == 3:
+            if password := self._password:
+                if len(raw_manifest) < V13_MANIFEST_PREFIX.size + 16:
+                    raise FormatError("QZRA 1.3 encrypted manifest is truncated")
+                envelope_magic, manifest_salt, manifest_nonce = V13_MANIFEST_PREFIX.unpack_from(raw_manifest)
+                if envelope_magic != V13_MANIFEST_MAGIC:
+                    raise FormatError("QZRA 1.3 encrypted manifest envelope is invalid")
+                self._encryption_salt = manifest_salt
+                archive_master_key = _derive_encryption_key(password, manifest_salt)
+                self._manifest_key = _derive_v13_subkey(archive_master_key, b"manifest")
+                self._encryption_key = _derive_v13_subkey(archive_master_key, b"root-chunks")
+                ciphertext = raw_manifest[V13_MANIFEST_PREFIX.size:]
+                try:
+                    manifest_plain = _aesgcm_class()(self._manifest_key).decrypt(
+                        manifest_nonce,
+                        ciphertext,
+                        _manifest_aad_v13(manifest_salt, manifest_nonce, flags, reserved),
+                    )
+                except Exception as exc:
+                    _raise_authentication_error(exc)
+                if len(manifest_plain) > MAX_MANIFEST_SIZE:
+                    raise FormatError("Decrypted manifest exceeds the maximum permitted size")
+                raw_manifest_json = manifest_plain
+            else:
+                raise QamzorError("QZRA 1.3 hides filenames and metadata; provide the archive master password when opening")
+        else:
+            raw_manifest_json = raw_manifest
+
         try:
-            manifest = json.loads(raw_manifest.decode("utf-8"))
+            manifest = json.loads(raw_manifest_json.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise FormatError("Manifest is not valid UTF-8 JSON") from exc
         if not isinstance(manifest, dict) or manifest.get("format") != "QZRA":
@@ -620,8 +949,7 @@ class QZRAReader:
         if manifest.get("version") != f"{major}.{minor}":
             raise FormatError("Header and manifest versions do not match")
         security = manifest.get("security")
-        self.is_encrypted = minor == 2
-        if self.is_encrypted:
+        if minor == 2:
             if not isinstance(security, dict) or security.get("encryption") != "AES-256-GCM":
                 raise FormatError("QZRA 1.2 requires AES-256-GCM security metadata")
             kdf = security.get("kdf")
@@ -646,10 +974,56 @@ class QZRAReader:
             auth_manifest = dict(manifest)
             auth_manifest.pop("manifest_auth", None)
             self._manifest_auth_data = _canonical_manifest_bytes(auth_manifest)
+        elif minor == 3:
+            if not isinstance(security, dict) or security.get("encryption") != "AES-256-GCM" or security.get("manifest_encryption") != "AES-256-GCM":
+                raise FormatError("QZRA 1.3 requires AES-256-GCM payload and manifest encryption")
+            kdf = security.get("kdf")
+            if not isinstance(kdf, dict) or (
+                kdf.get("name"), kdf.get("n"), kdf.get("r"), kdf.get("p"), kdf.get("salt")
+            ) != ("scrypt", SCRYPT_N, SCRYPT_R, SCRYPT_P, self._encryption_salt.hex()):
+                raise FormatError("QZRA 1.3 key derivation metadata is invalid")
+            raw_scopes = security.get("scopes", [])
+            if not isinstance(raw_scopes, list) or len(raw_scopes) > MAX_FOLDER_SCOPES:
+                raise FormatError("QZRA 1.3 protected-folder scope list is invalid")
+            for scope in raw_scopes:
+                if not isinstance(scope, dict):
+                    raise FormatError("QZRA 1.3 folder scope must be an object")
+                scope_id, path, scope_kdf, key_check = (
+                    scope.get("id"), scope.get("path"), scope.get("kdf"), scope.get("key_check")
+                )
+                if not isinstance(scope_id, str) or not re.fullmatch(r"[0-9a-f]{32}", scope_id):
+                    raise FormatError("QZRA 1.3 folder scope ID is malformed")
+                if not isinstance(path, str):
+                    raise FormatError("QZRA 1.3 folder scope path is malformed")
+                _validate_archive_path(path)
+                if path in self._folder_scopes or scope_id in self._scope_by_id:
+                    raise FormatError("Duplicate QZRA 1.3 folder scope")
+                if not isinstance(scope_kdf, dict) or (
+                    scope_kdf.get("name"), scope_kdf.get("n"), scope_kdf.get("r"), scope_kdf.get("p")
+                ) != ("scrypt", SCRYPT_N, SCRYPT_R, SCRYPT_P):
+                    raise FormatError("QZRA 1.3 folder key derivation parameters are unsupported")
+                scope_salt = scope_kdf.get("salt")
+                if not isinstance(scope_salt, str) or not re.fullmatch(r"[0-9a-f]{32}", scope_salt):
+                    raise FormatError("QZRA 1.3 folder salt is malformed")
+                if not isinstance(key_check, dict):
+                    raise FormatError("QZRA 1.3 folder key check is missing")
+                check_nonce, check_tag = key_check.get("nonce"), key_check.get("tag")
+                if not isinstance(check_nonce, str) or not re.fullmatch(r"[0-9a-f]{24}", check_nonce):
+                    raise FormatError("QZRA 1.3 folder key-check nonce is malformed")
+                if not isinstance(check_tag, str) or not re.fullmatch(r"[0-9a-f]{32}", check_tag):
+                    raise FormatError("QZRA 1.3 folder key-check tag is malformed")
+                self._folder_scopes[path] = scope
+                self._scope_by_id[scope_id] = scope
         elif security is not None or manifest.get("manifest_auth") is not None:
             raise FormatError("Unencrypted QZRA versions cannot contain security metadata")
+
         raw_entries = manifest.get("entries")
-        if not isinstance(raw_entries, list) or len(raw_entries) != entry_count:
+        if not isinstance(raw_entries, list):
+            raise FormatError("Manifest entries must be an array")
+        if minor == 3:
+            if len(raw_entries) > MAX_ENTRIES:
+                raise FormatError("Archive contains too many entries")
+        elif len(raw_entries) != entry_count:
             raise FormatError("Manifest entry count does not match header")
         self.entries = [ArchiveEntry.from_json(item) for item in raw_entries]
         _validate_entry_set(self.entries)
@@ -658,41 +1032,55 @@ class QZRAReader:
         if minor >= 1 and any(entry.kind == "file" and entry.chunks is None for entry in self.entries):
             raise FormatError("QZRA chunked file entries must use chunk references")
         if minor == 2 and any(
-            entry.kind == "file" and any(chunk.nonce is None for chunk in (entry.chunks or ()))
+            entry.kind == "file" and any(chunk.nonce is None or chunk.scope_id is not None for chunk in (entry.chunks or ()))
             for entry in self.entries
         ):
-            raise FormatError("Every QZRA 1.2 chunk must have an AES-GCM nonce")
+            raise FormatError("Every QZRA 1.2 chunk must have an AES-GCM nonce and no folder scope")
         if minor < 2 and any(
-            entry.kind == "file" and any(chunk.nonce is not None for chunk in (entry.chunks or ()))
+            entry.kind == "file" and any(chunk.nonce is not None or chunk.scope_id is not None for chunk in (entry.chunks or ()))
             for entry in self.entries
         ):
-            raise FormatError("AES-GCM chunk nonces require QZRA 1.2")
+            raise FormatError("AES-GCM chunk metadata requires QZRA 1.2 or later")
+        if minor == 3:
+            directory_names = {entry.path for entry in self.entries if entry.kind == "directory"}
+            for scope_path in self._folder_scopes:
+                if scope_path not in directory_names:
+                    raise FormatError("Protected-folder scope does not refer to an explicit directory entry")
+            scope_paths_by_length = sorted(self._folder_scopes, key=len, reverse=True)
+            for entry in self.entries:
+                if entry.kind != "file":
+                    continue
+                expected_scope_path = next(
+                    (candidate for candidate in scope_paths_by_length if entry.path.startswith(candidate + "/")),
+                    None,
+                )
+                expected_scope_id = self._folder_scopes[expected_scope_path]["id"] if expected_scope_path else None
+                for chunk in entry.chunks or ():
+                    if chunk.nonce is None or chunk.scope_id != expected_scope_id:
+                        raise FormatError(f"QZRA 1.3 chunk folder scope does not match its file path: {entry.path}")
         self.payload_offset = HEADER_SIZE + manifest_len
         payload_length = self.file_size - self.payload_offset
-        # Equal ranges are legal only when they are exact references to the
-        # same content-addressed chunk. Partial overlaps remain forbidden.
-        range_descriptors: dict[tuple[int, int], tuple[int, str, str, Optional[str]]] = {}
+        range_descriptors: dict[tuple[int, int], tuple[int, str, str, Optional[str], Optional[str]]] = {}
         for entry in self.entries:
             if entry.kind != "file":
                 continue
             if entry.chunks is None:
-                blocks = [(entry.offset, entry.compressed_size, entry.size, entry.compression, entry.sha256, None)]
+                blocks = [(entry.offset, entry.compressed_size, entry.size, entry.compression, entry.sha256, None, None)]
             else:
                 blocks = [
-                    (chunk.offset, chunk.compressed_size, chunk.size, chunk.compression, chunk.sha256, chunk.nonce)
+                    (chunk.offset, chunk.compressed_size, chunk.size, chunk.compression, chunk.sha256, chunk.nonce, chunk.scope_id)
                     for chunk in entry.chunks
                 ]
-            for offset, compressed_size, original_size, compression, digest, nonce in blocks:
+            for offset, compressed_size, original_size, compression, digest, nonce, scope_id in blocks:
                 end = offset + compressed_size
                 if end > payload_length:
                     raise FormatError(f"Entry data extends beyond archive: {entry.path}")
                 if compressed_size == 0:
-                    # Legacy empty stored files have no physical range.
                     if entry.chunks is not None or original_size != 0:
                         raise FormatError("Only legacy empty files may have zero-length payloads")
                     continue
                 key = (offset, end)
-                descriptor = (original_size, compression, digest or "", nonce)
+                descriptor = (original_size, compression, digest or "", nonce, scope_id)
                 previous = range_descriptors.get(key)
                 if previous is not None and previous != descriptor:
                     raise FormatError("Shared payload range has inconsistent chunk metadata")
@@ -745,6 +1133,8 @@ class QZRAReader:
             "deduplicated_chunk_references": logical_chunks - len(physical) if self.version_minor >= 1 else 0,
             "compression_methods": sorted(methods),
             "encrypted": self.is_encrypted,
+            "metadata_encrypted": self.metadata_encrypted,
+            "protected_folders": len(self._folder_scopes),
             "integrity": "SHA-256 per file and chunk" + ("; AES-256-GCM authenticated payloads" if self.is_encrypted else ""),
         }
 
@@ -758,22 +1148,36 @@ class QZRAReader:
         sink: Optional[BinaryIO],
         whole_file_digest,
         nonce: Optional[str] = None,
+        scope_id: Optional[str] = None,
     ) -> tuple[int, str]:
         source: BinaryIO = self._file
         if self.is_encrypted:
             if nonce is None:
                 raise FormatError("Encrypted archive chunk is missing its nonce")
             self._ensure_authenticated()
+            if self.version_minor == 3 and scope_id is not None:
+                chunk_key = self._scope_keys.get(scope_id)
+                if chunk_key is None:
+                    scope = self._scope_by_id.get(scope_id)
+                    label = scope.get("path", scope_id) if scope else scope_id
+                    raise QamzorError(f"Folder is locked; unlock it with its independent password: {label}")
+                aad = _chunk_aad_v13(expected_size, expected_digest, compression, scope_id)
+            elif self.version_minor == 3:
+                chunk_key = self._encryption_key
+                aad = _chunk_aad_v13(expected_size, expected_digest, compression, None)
+            else:
+                chunk_key = self._encryption_key
+                aad = _chunk_aad(expected_size, expected_digest, compression)
             self._file.seek(self.payload_offset + offset)
             ciphertext = self._file.read(compressed_size)
             if len(ciphertext) != compressed_size:
                 raise FormatError("Truncated encrypted chunk")
             try:
                 AESGCM = _aesgcm_class()
-                compressed_data = AESGCM(self._encryption_key).decrypt(
+                compressed_data = AESGCM(chunk_key).decrypt(
                     bytes.fromhex(nonce),
                     ciphertext,
-                    _chunk_aad(expected_size, expected_digest, compression),
+                    aad,
                 )
             except Exception as exc:
                 _raise_authentication_error(exc)
@@ -838,6 +1242,13 @@ class QZRAReader:
     def _decode_file(self, entry: ArchiveEntry, sink: Optional[BinaryIO] = None) -> tuple[int, str]:
         if entry.kind != "file":
             raise QamzorError("Only file entries contain data")
+        if self.version_minor == 3:
+            matching_scopes = [path for path in self._folder_scopes if entry.path.startswith(path + "/")]
+            if matching_scopes:
+                required_path = max(matching_scopes, key=len)
+                required_id = self._folder_scopes[required_path]["id"]
+                if required_id not in self._scope_keys:
+                    raise QamzorError(f"Folder is locked; unlock it with its independent password: {required_path}")
         whole_digest = hashlib.sha256()
         output_size = 0
         if entry.chunks is None:
@@ -861,6 +1272,7 @@ class QZRAReader:
                     sink,
                     whole_digest,
                     chunk.nonce,
+                    chunk.scope_id,
                 )
                 output_size += decoded
         actual_digest = whole_digest.hexdigest()
@@ -880,7 +1292,13 @@ class QZRAReader:
             if (kind is None or entry.kind == kind) and needle in entry.path.casefold()
         ]
 
-    def preview(self, path: str, *, max_bytes: int = 65536) -> dict:
+    def preview(
+        self,
+        path: str,
+        *,
+        max_bytes: int = 65536,
+        folder_passwords: Optional[dict[str, str]] = None,
+    ) -> dict:
         """Return a bounded prefix while still verifying the complete file."""
         if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or not 0 <= max_bytes <= 16 * 1024 * 1024:
             raise QamzorError("Preview byte limit must be between 0 and 16 MiB")
@@ -905,6 +1323,8 @@ class QZRAReader:
                 return len(data)
 
         self._ensure_authenticated()
+        for folder_path, folder_password in (folder_passwords or {}).items():
+            self.set_folder_password(folder_path, folder_password)
         sink = PrefixSink(max_bytes)
         self._decode_file(entry, sink)
         return {
@@ -916,8 +1336,10 @@ class QZRAReader:
             "verified": True,
         }
 
-    def verify(self) -> dict:
+    def verify(self, *, folder_passwords: Optional[dict[str, str]] = None) -> dict:
         self._ensure_authenticated()
+        for folder_path, folder_password in (folder_passwords or {}).items():
+            self.set_folder_password(folder_path, folder_password)
         checked = 0
         total = 0
         for entry in self.entries:
@@ -935,8 +1357,11 @@ class QZRAReader:
         overwrite: bool = False,
         max_total_bytes: Optional[int] = None,
         max_files: Optional[int] = None,
+        folder_passwords: Optional[dict[str, str]] = None,
     ) -> list[str]:
         self._ensure_authenticated()
+        for folder_path, folder_password in (folder_passwords or {}).items():
+            self.set_folder_password(folder_path, folder_password)
         root = Path(destination).expanduser().absolute()
         if root.exists() and root.is_symlink():
             raise SafetyError("Extraction destination cannot be a symbolic link")
@@ -1029,5 +1454,10 @@ def _safe_target(root: Path, relative: str, *, create_parents: bool) -> Path:
     return target
 
 
-def open_archive(path: os.PathLike | str, *, password: Optional[str] = None) -> QZRAReader:
-    return QZRAReader(path, password=password)
+def open_archive(
+    path: os.PathLike | str,
+    *,
+    password: Optional[str] = None,
+    folder_passwords: Optional[dict[str, str]] = None,
+) -> QZRAReader:
+    return QZRAReader(path, password=password, folder_passwords=folder_passwords)

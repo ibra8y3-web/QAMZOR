@@ -62,3 +62,21 @@ The Android writer in this development build still creates unencrypted QZRA 1.1 
 - CLI: `qz convert output.qzra file1.bin folder/` performs the same lossless packaging. The `create` command remains available as a compatible synonym.
 - Kotlin SDK: `QamzorClient.convertToQzra(destination, inputs)` exposes the explicit conversion operation.
 - Desktop: **Convert files/folders to QZRA** accepts multiple files and directories, writes a `.qzra` file and performs a post-write integrity verification.
+
+
+## إضافة مجلد كامل وحماية الأرشيف بكلمة مرور
+
+1. اختر **إضافة مجلد** وحدد المجلد من نافذة Android الرسمية.
+2. ينسخ QAMZOR الشجرة recursive إلى مساحة التطبيق الخاصة، بما يشمل المجلدات الفرعية والمجلدات الفارغة. الملفات التي لا يحدد موفر SAF نوع MIME لها تُعامل كعناصر قابلة للقراءة ويُختبر فتح تدفقها بدل إسقاطها بصمت.
+3. تعرض الحالة عدد الملفات والمجلدات والحجم المنسوخ. لو فشلت قراءة عنصر، تظهر رسالة باسمه ولا يُضاف المجلد الجزئي إلى قائمة المصادر.
+4. فعّل **حماية أرشيف QZRA بكلمة مرور** قبل الضغط على تحويل، واكتب كلمة مرور من 10 أحرف على الأقل وأعد تأكيدها. ينشئ المحرك QZRA 1.2 باستخدام scrypt وAES-256-GCM، ثم يتحقق من الأرشيف بكلمة المرور قبل عرضه للحفظ.
+5. لا يتم تخزين كلمة المرور في تفضيلات التطبيق أو ملف السجل. لا توجد آلية استرداد كلمة المرور؛ احتفظ بها في مدير كلمات مرور موثوق.
+
+**نطاق الحماية:** كلمة المرور في هذا الإصدار تحمي محتوى الملفات وتوثق الفهرس. أسماء الملفات والمجلدات وأحجامها تظل ظاهرة في بيانات QZRA 1.2. كلمة مرور مستقلة لكل مجلد داخل الأرشيف ليست مدعومة بعد؛ يلزم تصميم إصدار صيغة جديد لتشفير الفهرس والمجلدات بشكل انتقائي.
+
+
+## Operation center and validation boundary
+
+The operation center stores up to 100 secret-free operation events in app preferences. It displays the current operation and elapsed time while the Activity is running, and counts completed, failed and interrupted tasks. If the Android process is restarted while a task is active, the next launch records that task as interrupted. This Activity-thread worker is not a persistent WorkManager/foreground service: it does not guarantee completion after process death and does not provide pause/resume/cancel.
+
+The Kotlin source includes Python-generated QZRA 1.3 interoperability tests, and the GitHub Actions workflow is configured to install Gradle/JDK/Android SDK, run the Kotlin tests and build a debug APK. These tests/builds must complete successfully on GitHub before the update can be considered compiled or device-validated.

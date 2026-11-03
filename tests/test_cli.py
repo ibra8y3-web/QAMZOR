@@ -5,6 +5,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from qamzor.cli import main
@@ -43,6 +44,41 @@ class QamzorCliConversionTests(unittest.TestCase):
                 code = main(["convert", str(root / "output.zip"), str(source)])
             self.assertEqual(2, code)
             self.assertIn("must use the .qzra extension", stderr.getvalue())
+
+    def test_qzra_13_cli_hides_metadata_and_accepts_folder_password_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = root / "Project"
+            vault = project / "Finance"
+            vault.mkdir(parents=True)
+            (vault / "forecast.txt").write_text("private forecast", encoding="utf-8")
+            archive = root / "private.qzra"
+            master_file = root / "master.txt"
+            folder_file = root / "folder.txt"
+            master_file.write_text("master-password", encoding="utf-8")
+            folder_file.write_text("folder-password", encoding="utf-8")
+            with patch("getpass.getpass", side_effect=["master-password", "master-password", "folder-password", "folder-password"]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = main([
+                        "create", str(archive), str(project), "--hide-metadata",
+                        "--protect-folder", "Project/Finance",
+                    ])
+            self.assertEqual(0, code)
+            raw = archive.read_bytes()
+            self.assertNotIn(b"forecast.txt", raw)
+            listing = io.StringIO()
+            with contextlib.redirect_stdout(listing):
+                code = main(["list", str(archive), "--password-file", str(master_file)])
+            self.assertEqual(0, code)
+            self.assertIn("Project/Finance/forecast.txt", listing.getvalue())
+            result = io.StringIO()
+            with contextlib.redirect_stdout(result):
+                code = main([
+                    "verify", str(archive), "--password-file", str(master_file),
+                    "--folder-password-file", f"Project/Finance={folder_file}",
+                ])
+            self.assertEqual(0, code)
+            self.assertTrue(json.loads(result.getvalue())["valid"])
 
 
 if __name__ == "__main__":

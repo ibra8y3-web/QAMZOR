@@ -22,6 +22,18 @@ class QamzorClientTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun sdkCreatesPasswordProtectedQzra12Archive() {
+        val root = Files.createTempDirectory("qamzor-sdk-encrypted-test").toFile()
+        try {
+            val source = File(root, "secret.txt").apply { writeText("SDK encrypted archive") }
+            val archive = File(root, "secret.qzra")
+            val client = QamzorClient()
+            val result = client.convertToQzra(archive, listOf(source), password = "correct horse battery staple")
+            assertEquals("1.2", client.verifyArchive(result.archive, "correct horse battery staple").version)
+            assertTrue(client.listEntries(archive, "correct horse battery staple").any { it.path == "secret.txt" })
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun publicFacadeCreatesAndVerifiesArchive() {
         val root = Files.createTempDirectory("qamzor-sdk-test").toFile()
         try {
@@ -35,4 +47,21 @@ class QamzorClientTest {
             assertEquals("hello.txt", client.listEntries(archive).single().path)
         } finally { root.deleteRecursively() }
     }
+    @Test fun sdkComparesVerifiedSha256Content() {
+        val root = Files.createTempDirectory("qamzor-sdk-compare-test").toFile()
+        try {
+            val leftSource = File(root, "left.txt").apply { writeText("AAAA") }
+            val rightSource = File(root, "right.txt").apply { writeText("BBBB") }
+            val left = File(root, "left.qzra")
+            val right = File(root, "right.qzra")
+            val client = QamzorClient()
+            client.createArchive(left, listOf(leftSource))
+            client.createArchive(right, listOf(rightSource))
+            val comparison = client.compareArchives(left, right)
+            assertTrue(comparison.contentVerified)
+            assertEquals(listOf("right.txt"), comparison.added)
+            assertEquals(listOf("left.txt"), comparison.removed)
+        } finally { root.deleteRecursively() }
+    }
+
 }

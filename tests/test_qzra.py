@@ -390,5 +390,136 @@ class QZRATests(unittest.TestCase):
         self.assertEqual(result.exception.code, 0)
 
 
+class QZRA13Tests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.source = self.root / "input data"
+        (self.source / "nested").mkdir(parents=True)
+        (self.source / "hello.txt").write_text("Hello QAMZOR\n", encoding="utf-8")
+        (self.source / "nested" / "empty.bin").write_bytes(b"")
+        (self.source / "nested" / "arabic-ملف.txt").write_text("بيانات عربية", encoding="utf-8")
+        (self.source / "empty-dir").mkdir()
+        self.archive = self.root / "sample.qzra"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_qzra_13_encrypts_all_manifest_names_and_hides_entry_count(self):
+        private = self.source / "private-area"
+        private.mkdir()
+        (private / "classified-name.txt").write_text("classified payload", encoding="utf-8")
+        archive = self.root / "metadata-hidden.qzra"
+        create_archive(
+            archive,
+            [self.source],
+            password="archive-master-password",
+            encrypt_metadata=True,
+        )
+        raw = archive.read_bytes()
+        header = HEADER.unpack(raw[:HEADER_SIZE])
+        self.assertEqual(header[2], 3)
+        self.assertEqual(header[5], 0, "QZRA 1.3 must not reveal entry count in the fixed header")
+        self.assertNotIn(b"private-area", raw)
+        self.assertNotIn(b"classified-name.txt", raw)
+        with self.assertRaises(QamzorError):
+            QZRAReader(archive)
+        with self.assertRaises(IntegrityError):
+            QZRAReader(archive, password="incorrect-master-password")
+        with QZRAReader(archive, password="archive-master-password") as reader:
+            self.assertTrue(reader.metadata_encrypted)
+            self.assertEqual(reader.version_minor, 3)
+            paths = {entry.path for entry in reader.list_entries()}
+            self.assertIn("input data/private-area/classified-name.txt", paths)
+            self.assertTrue(reader.verify()["valid"])
+
+    def test_qzra_13_independent_folder_passwords_and_scoped_extraction(self):
+        protected = self.source / "vault"
+        protected.mkdir()
+        secret = protected / "secret.txt"
+        secret.write_text("folder-only secret" * 500, encoding="utf-8")
+        public = self.source / "public.txt"
+        public.write_text("public content", encoding="utf-8")
+        archive = self.root / "folder-scopes.qzra"
+        result = create_archive(
+            archive,
+            [self.source],
+            password="master-password",
+            folder_passwords={"input data/vault": "vault-specific-password"},
+        )
+        self.assertEqual(result["format_version"], "1.3")
+        self.assertEqual(result["protected_folders"], 1)
+        with QZRAReader(archive, password="master-password") as reader:
+            self.assertEqual(reader.preview("input data/public.txt")["data"], b"public content")
+            with self.assertRaises(QamzorError):
+                reader.preview("input data/vault/secret.txt")
+            with self.assertRaises(IntegrityError):
+                reader.set_folder_password("input data/vault", "not-the-folder-password")
+            reader.set_folder_password("input data/vault", "vault-specific-password")
+            preview = reader.preview("input data/vault/secret.txt", max_bytes=32)
+            self.assertEqual(preview["data"], ("folder-only secret" * 500).encode()[:32])
+            self.assertTrue(reader.verify()["valid"])
+            output = self.root / "vault-extracted"
+            written = reader.extract(output, selected=["input data/vault"])
+        self.assertIn("input data/vault/secret.txt", written)
+        self.assertEqual((output / "input data/vault/secret.txt").read_text(encoding="utf-8"), "folder-only secret" * 500)
+
+    def test_qzra_13_nested_folder_password_uses_deepest_scope(self):
+        outer = self.source / "outer"
+        inner = outer / "inner"
+        inner.mkdir(parents=True)
+        (outer / "outer.txt").write_text("outer", encoding="utf-8")
+        (inner / "inner.txt").write_text("inner", encoding="utf-8")
+        archive = self.root / "nested-scopes.qzra"
+        create_archive(
+            archive,
+            [self.source],
+            password="master-password",
+            folder_passwords={
+                "input data/outer": "outer-password",
+                "input data/outer/inner": "inner-password",
+            },
+        )
+        with QZRAReader(archive, password="master-password") as reader:
+            reader.set_folder_password("input data/outer", "outer-password")
+            self.assertEqual(reader.preview("input data/outer/outer.txt")["data"], b"outer")
+            with self.assertRaises(QamzorError):
+                reader.preview("input data/outer/inner/inner.txt")
+            reader.set_folder_password("input data/outer/inner", "inner-password")
+            self.assertEqual(reader.preview("input data/outer/inner/inner.txt")["data"], b"inner")
+
+    def test_qzra_13_rejects_unknown_or_non_directory_scopes(self):
+        source_file = self.root / "ordinary.txt"
+        source_file.write_text("ordinary", encoding="utf-8")
+        archive = self.root / "invalid-scope.qzra"
+        with self.assertRaises(QamzorError):
+            create_archive(
+                archive,
+                [source_file],
+                password="master-password",
+                folder_passwords={"ordinary.txt": "folder-password"},
+            )
+        with self.assertRaises(QamzorError):
+            create_archive(
+                archive,
+                [self.source],
+                folder_passwords={"input data": "folder-password"},
+            )
+
+    def test_qzra_13_empty_protected_folder_password_is_verifiable(self):
+        empty = self.source / "empty-vault"
+        empty.mkdir()
+        archive = self.root / "empty-vault.qzra"
+        create_archive(
+            archive,
+            [self.source],
+            password="master-password",
+            folder_passwords={"input data/empty-vault": "empty-vault-password"},
+        )
+        with QZRAReader(archive, password="master-password") as reader:
+            reader.set_folder_password("input data/empty-vault", "empty-vault-password")
+            self.assertTrue(reader.verify()["valid"])
+
+
 if __name__ == "__main__":
     unittest.main()
