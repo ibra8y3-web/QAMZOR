@@ -1,82 +1,112 @@
-# QAMZOR Android — Native QZRA Conversion and Virtual Archive Explorer (development build)
+# دليل QAMZOR Android 0.9.0
 
-## Convert files and folders into the native QZRA format
+## ما الذي يفعله تطبيق Android فعليًا؟
 
-QZRA is QAMZOR's archive/container format. The conversion operation losslessly packages ordinary files and folders into one `.qzra` container. It does **not** transcode a JPEG into a new image codec or rewrite a DOCX as a proprietary document: original file bytes, names, extensions and relative folder paths remain unchanged inside the archive. Original source items are not modified or deleted.
+تطبيق Android في هذا الإصدار هو مدير ملفات وأداة إنشاء واستعادة وفحص لأرشيف QZRA الأصلي. لا يعني وجود مكتبة أو أمر في Python أن الوظيفة أصبحت متاحة في واجهة Android. واجهة Android الحالية تتعامل مع QZRA، ولا تدّعي دعم إنشاء أو قراءة ZIP أو 7z أو RAR أو TAR.
 
-## Create an archive from files and folders
+## الملفات والبحث والترتيب
 
-1. Open **إضافة ملفات** and select one or more files.
-2. Open **إضافة مجلد كامل** and choose a folder from Android's Storage Access Framework picker. The app walks the selected document tree recursively, including nested and empty folders.
-3. Repeat either action to combine several files and folders in one archive. The selected-items panel shows queued top-level sources.
-4. Select **تحويل المحدد إلى صيغة البرنامج QZRA**. QAMZOR packages the selected items, verifies the resulting archive, and opens Android's save-document dialog.
-5. Choose the destination and filename.
+- يعرض متصفح الملفات مجلد الهاتف الحالي، ويمكن التنقل إلى المجلدات ووحدات التخزين التي يسمح Android بالوصول إليها.
+- البحث فوري بالاسم أو الامتداد داخل المجلد الحالي.
+- خيارات الترتيب: الأحدث تعديلًا، الأقدم تعديلًا، الاسم تصاعديًا أو تنازليًا، الحجم، والنوع.
+- خيار «إظهار الملفات المخفية» وخيار «عرض المجلدات أولًا» موجودان في الإعدادات.
+- الاختيارات والبحث والترتيب محفوظة لتسهيل الرجوع إلى نفس طريقة العمل.
+- الوصول إلى كل الملفات على Android 11+ يتطلب إذن إدارة الملفات المناسب. يظل الوصول خاضعًا لقواعد Android ومزود الملفات.
 
-The conversion output is a native `.qzra` archive. It retains each selected folder's name and relative paths beneath it. Individual files use the display names supplied by the document provider. Case-insensitive duplicate top-level names receive a numeric suffix rather than overwriting an earlier selection.
+## إنشاء أرشيف بجانب المصدر
 
-## Open and navigate an archive without unpacking it
+1. حدد ملفًا أو مجلدًا من صفحة الملفات.
+2. اختر «أرشفة» لإنشاء QZRA غير مشفر، أو «تشفير» لتعيين كلمة مرور رئيسية.
+3. عند التشفير، أدخل كلمة مرور رئيسية وأكدها. يمكنك اختياريًا اختيار ما يصل إلى 32 مجلدًا داخل المصدر وتعيين كلمة مرور مستقلة لكل مجلد.
+4. يُنشأ ملف `.qzra` بجانب العنصر. يتحقق التطبيق من الأرشيف كاملًا، ويقارن عدد الملفات والحجم وبصمة حالة المصدر قبل أي حذف.
+5. خيار «حذف الأصل بعد الأرشفة المتحقق منها» يتحكم في الاحتفاظ بالمصدر. عند إيقافه، يبقى المصدر بجانب الأرشيف. يظهر تأكيد قبل العملية إذا كان خيار التأكيد مفعّلًا.
 
-1. Select **استعراض الأرشيف وفحصه** and choose a `.qzra` file.
-2. QAMZOR reads and validates the archive header and manifest, then opens **مستكشف QZRA الافتراضي**. Opening the explorer does not extract the archive's entries.
-3. Tap a folder to enter it. Use **المجلد السابق** to go up one level. The breadcrumb shows the current archive-relative path.
-4. File rows show their original size. Tap a file to open its actions.
-5. The explorer can read the file's compressed blocks directly from the archive. It retains only the configured preview limit in memory and checks every chunk SHA-256 plus the whole-file SHA-256 before displaying a successful preview.
+بدون كلمة مرور، الأرشيف ليس مشفرًا؛ هو مجرد حاوية QZRA. مع كلمة مرور رئيسية يستخدم المحرك AES-256-GCM واشتقاق المفاتيح scrypt مع إخفاء بيانات الفهرس وفق QZRA 1.3. كلمات مرور المجلدات المستقلة تحمي نطاقات منفصلة. لا يمكن استعادة كلمة مرور مفقودة.
 
-The archive container itself is copied to the app's private cache because Android document providers do not consistently provide random-access streams. The files *inside* that container are not unpacked to the destination when browsing or previewing.
+## فتح الأرشيف وتصفحه
 
-## In-archive previews
+- افتح ملف `.qzra` من زر «فتح أرشيف» أو من مدير ملفات Android عبر مشاركة/فتح الملف.
+- يعرض المستكشف المسار الحالي ومحتويات المجلد. البحث والترتيب يعملان على عناصر المجلد المفتوح.
+- بعد مصادقة الفهرس تظهر معلومات الإصدار الفعلي QZRA، حالة التشفير وخصوصية البيانات، وأعداد الملفات والمجلدات والحجم الأصلي.
+- فتح ملف معاينة لا يفك الأرشيف كله. تتم قراءة الملف المختار والتحقق من البلوكات وبصمة SHA-256 كاملة حتى لو كانت المعاينة تعرض جزءًا محدودًا فقط.
+- الأنواع المعاينة حاليًا: النصوص الشائعة، الصور PNG/JPEG/GIF/WEBP/BMP، والصفحة الأولى من PDF ضمن حدود حجم المعاينة. المستندات المكتبية والصوت والفيديو لا تملك عارضًا داخليًا في هذا الإصدار؛ يمكن استخراجها وفتحها بتطبيق خارجي.
 
-- Text: TXT, MD, CSV/TSV, JSON, XML, HTML/HTM, CSS, JS/TS, PY, KT, JAVA, YAML/YML, TOML, INI, properties, shell, SQL and LOG. The viewer retains up to 2 MiB. Larger files are still fully read and integrity-checked, but only the beginning is displayed; extract the item to read the rest.
-- Images: PNG, JPEG, GIF, WEBP and BMP. The Android bitmap decoder displays the image when the complete file is within the 16 MiB preview limit. Larger images are integrity-checked but must be extracted for full viewing.
-- PDF: the first page is rendered with Android's `PdfRenderer` when the complete PDF is within the 16 MiB preview limit. The temporary PDF used by the platform renderer is kept in private cache and removed when the preview is closed.
-- Other binary/document formats are integrity-checked but are not rendered by the built-in viewer. Choose **استخراج الملف** to open them with an installed application. DOCX/XLSX/ODT and video/audio preview are not implemented in this build.
+## كلمات مرور المجلدات المستقلة
 
-For each successful preview, QAMZOR decodes the entire selected file chunk-by-chunk to verify its full digest, even when it only retains a bounded prefix for display. This is not a full archive extraction, although reading a large selected file still consumes time proportional to that file's size.
+- بعد إدخال كلمة مرور الأرشيف، يمكن تصفح أسماء المجلدات في QZRA 1.3.
+- عند فتح مجلد محمي، يطلب التطبيق كلمة مروره المستقلة.
+- كلمات المرور النشطة تبقى في ذاكرة الجلسة أثناء العمل. يمكن للمستخدم اختياريًا حفظ كلمات المرور في «خزنة كلمات المرور»؛ تُشفّر القيم باستخدام AES-GCM ومفتاح محفوظ في Android Keystore، وتُحفظ بيانات وصفية غير سرية فقط في SharedPreferences. لا تُكتب كلمات المرور في سجل العمليات أو بيانات WorkManager.
+- يتحقق التطبيق من كلمة المرور عبر سجل key-check موثّق بـ AES-GCM داخل بيانات الأمان في QZRA 1.3 أثناء قراءة الفهرس. وعند الفحص أو المعاينة أو الاستخراج تُقرأ الملفات نفسها وتُتحقق بصمات SHA-256.
+- عمليات الاستعادة والمقارنة والفحص والاستخراج تطلب كلمات مرور النطاقات المطلوبة قبل قراءة بياناتها.
 
-## Selective and complete extraction
+## الاستعادة والاستخراج
 
-- File: tap a file, then choose **استخراج هذا الملف**.
-- Folder: long-press a folder and choose **استخراج هذا المجلد فقط**.
-- Everything: use **استخراج الكل** in the explorer, or the main **استخراج الأرشيف بالكامل** action.
+- «استعادة الأرشيف بالكامل» تستخرج العناصر إلى مجلد العمل المؤقت، وتتحقق من الملفات، ثم تنقل النتائج إلى جوار الأرشيف بأسماء لا تستبدل الملفات الموجودة.
+- إذا فشل نقل عنصر بعد نقل عناصر أخرى، يحاول المحرك التراجع عن العناصر التي نقلها في نفس العملية مع إبقاء الأرشيف الأصلي.
+- إذا نجحت الاستعادة وفشل حذف الأرشيف، تبقى الملفات المستعادة والأرشيف، ويظهر خطأ واضح بدل إعلان حذف ناجح.
+- يمكن استخراج ملف أو مجلد منفرد إلى جوار الأرشيف، أو استخراج العناصر إلى مجلد يختاره المستخدم عبر Android Storage Access Framework.
+- لا تستبدل الملفات الموجودة افتراضيًا؛ عند تعارض الاسم يُنشأ اسم استعادة بديل.
 
-Choose an Android destination folder. Selected extraction expands only the requested file or directory subtree while preserving its archive-relative directory path. Full extraction recreates the complete tree, including explicit empty directories. Existing destination items are not overwritten by default; choose an empty destination folder to avoid collisions.
+## الأدوات
 
-## Encrypted archives
+تتضمن واجهة Android الحالية فحص سلامة SHA-256، استخراج الأرشيف، مقارنة محتوى أرشيفين بالتحقق من محتوى كليهما، تقسيم QZRA إلى أجزاء، وإعادة تجميع ملف `.qzset` مع التحقق من ترتيب الأجزاء وحجمها وبصمة كل جزء وبصمة الأرشيف النهائي.
 
-The Kotlin core reads QZRA 1.2 using the format's scrypt parameters and AES-256-GCM manifest/chunk authentication. When an encrypted archive is opened, QAMZOR asks for its password. The manifest is authenticated before listing, and every file's authenticated chunks and SHA-256 digests are checked when that file is previewed or extracted. A wrong password or modified ciphertext is rejected.
+## الإعدادات
 
-The Android writer in this development build still creates unencrypted QZRA 1.1 archives. Password-protected archive creation, detached signatures, recovery sidecars and backup repositories are not exposed in the Android UI yet.
+توجد صفحة إعدادات مستقلة وتحتوي على:
 
-## Current limitations and validation status
+- إظهار/إخفاء الملفات المخفية.
+- وضع المجلدات أولًا في متصفح الهاتف والأرشيف.
+- الاحتفاظ بالأصل أو حذفه بعد التحقق الكامل من الأرشيف.
+- تأكيد العمليات المؤثرة قبل المتابعة.
+- تنظيف ملفات QAMZOR المؤقتة الخاصة التي لم تتغير منذ 24 ساعة على الأقل عند بدء التطبيق أو يدويًا؛ الملفات الحديثة والأرشيف المفتوح محمية.
+- تحديد عدد سجلات العمليات المحفوظة (20 إلى 500).
+- تنظيف الكاش المؤقت القديم بعد 24 ساعة، وتنظيف مجلدات استعادة QAMZOR المهجورة بعد سبعة أيام عند بدء استعادة جديدة؛ المجلدات الحديثة لا تُمس.
+- إعداد عدد إصدارات النسخ الاحتياطي المحتفظ بها (10 إلى 100).
+- إعادة ضبط إعدادات العرض دون حذف الأرشيفات أو النسخ الاحتياطية.
 
-- This is a development source update. A new APK must be built by the GitHub Actions `Platform builds` workflow and installed on a device before the new explorer can be considered device-validated.
-- Kotlin JUnit regression tests have been added for virtual directory navigation, bounded verified previews, selected file/folder extraction, encrypted QZRA 1.2 interoperability and wrong-password rejection. They have not been run in this offline workspace because Gradle and dependency caches are not installed here.
-- QZRA 1.0 legacy blocks larger than 16 MiB are rejected by the Kotlin reader to keep memory bounded.
-- The archive container is staged in private cache. Very large archives therefore need sufficient free cache storage; low-storage and lifecycle-resume testing remain required.
-- SAF providers vary. Some providers restrict access to protected locations or expose virtual documents that cannot be streamed.
-- The in-app PDF preview shows the first page only. Office document rendering and a mountable virtual filesystem are future work.
+كلمات المرور ومعلومات WebDAV ومفتاح التوقيع الخاص لا تُخزن كنص صريح؛ القيم السرية تحفظ مشفرة بواسطة Android Keystore. فقدان بيانات Android Keystore أو إزالة التطبيق قد يجعل الأسرار المحلية غير قابلة للاسترجاع؛ احتفظ بكلمات المرور ومفاتيح التحقق في مكان مستقل.
 
+## مركز العمليات والمهام المستمرة
 
-## Native QZRA conversion from other clients
+تعتمد العمليات الطويلة التالية على WorkManager مع إشعار Foreground: إنشاء الأرشيفات، الاستعادة، الفحص، النسخ الاحتياطي اليدوي/الدوري، فحص/استعادة النسخ، ورفع/تنزيل/مزامنة WebDAV. يعرض مركز العمليات المرحلة، النسبة، البايتات المنجزة والإجمالية، السرعة المقدرة، الوقت المتبقي، وعدد الملفات عندما يوفر المحرك ذلك. يمكن طلب الإيقاف المؤقت والاستئناف والإلغاء من واجهة إدارة العمليات؛ الإيقاف المؤقت يتم عند نقاط تقدم آمنة في المحرك، والإلغاء يتوقف عند أقرب نقطة آمنة.
 
-- CLI: `qz convert output.qzra file1.bin folder/` performs the same lossless packaging. The `create` command remains available as a compatible synonym.
-- Kotlin SDK: `QamzorClient.convertToQzra(destination, inputs)` exposes the explicit conversion operation.
-- Desktop: **Convert files/folders to QZRA** accepts multiple files and directories, writes a `.qzra` file and performs a post-write integrity verification.
+يحتفظ WorkManager بالمهام المجدولة بعد إغلاق Activity أو إعادة تشغيل الهاتف. لكن **الاستئناف الدقيق من آخر بايت بعد قتل عملية التطبيق غير مدعوم**: عند إعادة تشغيل عامل مهمة انقطعت، يعيد تنفيذ المعاملة من بدايتها. لذلك تستخدم الاستعادة وعمليات التنزيل ملفات مؤقتة/نشرًا ذريًا لتجنب عرض ملف جزئي باعتباره مكتملًا. المهام التي لا توفر نقطة تقدم داخلية قد تستجيب للإيقاف المؤقت عند المرحلة التالية فقط.
 
+## النسخ الاحتياطي وسجل الإصدارات
 
-## إضافة مجلد كامل وحماية الأرشيف بكلمة مرور
+- يمكن إنشاء نسخة QZRA يدوية أو جدولة نسخة تلقائية يومية أو كل ثلاثة أيام أو أسبوعية.
+- النسخ تُحفظ داخل مساحة QAMZOR الخاصة في Android، مع الاحتفاظ بعدد الإصدارات المحدد في الإعدادات. يمكن عرض سجل النسخ، والتحقق من SHA-256، واستعادة نسخة إلى مجلد منفصل.
+- كلمة مرور النسخة الاحتياطية اختيارية؛ إذا استُخدمت، تُخزن مراجعها مشفرة في Android Keystore ولا تُضاف إلى بيانات المهام.
+- تخزين إصدارات Android الحالي عبارة عن أرشيفات QZRA كاملة مستقلة. إعادة استخدام الكتل وإزالة التكرار التزايدية متاحة في مستودع Python، لكنها ليست صيغة تخزين Android snapshots في هذه النسخة.
+- إيقاف الجداول يلغي المهام الدورية ولا يحذف النسخ الموجودة.
 
-1. اختر **إضافة مجلد** وحدد المجلد من نافذة Android الرسمية.
-2. ينسخ QAMZOR الشجرة recursive إلى مساحة التطبيق الخاصة، بما يشمل المجلدات الفرعية والمجلدات الفارغة. الملفات التي لا يحدد موفر SAF نوع MIME لها تُعامل كعناصر قابلة للقراءة ويُختبر فتح تدفقها بدل إسقاطها بصمت.
-3. تعرض الحالة عدد الملفات والمجلدات والحجم المنسوخ. لو فشلت قراءة عنصر، تظهر رسالة باسمه ولا يُضاف المجلد الجزئي إلى قائمة المصادر.
-4. فعّل **حماية أرشيف QZRA بكلمة مرور** قبل الضغط على تحويل، واكتب كلمة مرور من 10 أحرف على الأقل وأعد تأكيدها. ينشئ المحرك QZRA 1.2 باستخدام scrypt وAES-256-GCM، ثم يتحقق من الأرشيف بكلمة المرور قبل عرضه للحفظ.
-5. لا يتم تخزين كلمة المرور في تفضيلات التطبيق أو ملف السجل. لا توجد آلية استرداد كلمة المرور؛ احتفظ بها في مدير كلمات مرور موثوق.
+## الحسابات السحابية والمزامنة
 
-**نطاق الحماية:** كلمة المرور في هذا الإصدار تحمي محتوى الملفات وتوثق الفهرس. أسماء الملفات والمجلدات وأحجامها تظل ظاهرة في بيانات QZRA 1.2. كلمة مرور مستقلة لكل مجلد داخل الأرشيف ليست مدعومة بعد؛ يلزم تصميم إصدار صيغة جديد لتشفير الفهرس والمجلدات بشكل انتقائي.
+- شاشة Android الحالية تدعم حسابات WebDAV عبر HTTPS فقط. تختبر الاتصال قبل حفظ الحساب، وتخزن كلمة المرور مشفرة عبر Android Keystore.
+- يمكن رفع أرشيف QZRA، واستعراض الأرشيفات ذات بيانات QAMZOR، وتنزيل أرشيف إلى مسار غير موجود مسبقًا والتحقق من الحجم وSHA-256 قبل نشره.
+- المزامنة اليدوية ثنائية الاتجاه للمجلد الجذر: ترفع الملفات المحلية غير الموجودة على الخادم، وتنزل الملفات البعيدة غير الموجودة محليًا، وتتجاهل المتطابق، وتبلغ عن التعارضات دون استبدال أو حذف أي نسخة.
+- لا توجد في Android حتى الآن واجهات OAuth أصلية لـGoogle Drive أو Dropbox أو OneDrive أو S3. موصلات هذه المزودات متاحة في Python، وليست حسابات Android في هذه النسخة.
 
+## خزنة الأسرار والتوقيع الرقمي
 
-## Operation center and validation boundary
+- يمكن إضافة كلمات مرور رئيسية أو مستقلة إلى خزنة QAMZOR، واختيارها في نوافذ فتح/مقارنة/استعادة الأرشيف، ثم حذفها من الخزنة.
+- مخزن الأسرار مشفر بـAES-GCM ومفتاح AES-256 داخل Android Keystore. لا يُخزن السر نفسه في تفضيلات Android أو سجل العمليات أو WorkManager input data.
+- يدعم Android إنشاء توقيع Ed25519 للأرشيف وتصدير ملفات الأرشيف والتوقيع والمفتاح العام للمشاركة، والتحقق من التوقيع.
+- يجب التحقق من بصمة المفتاح العام عبر قناة مستقلة موثوقة؛ إرفاق المفتاح العام نفسه مع التوقيع لا يثبت الهوية بمفرده. تدوير مفتاح التوقيع يجعل المفتاح الجديد هو المستخدم للتوقيعات اللاحقة، ولا يستعيد المفتاح الخاص القديم.
 
-The operation center stores up to 100 secret-free operation events in app preferences. It displays the current operation and elapsed time while the Activity is running, and counts completed, failed and interrupted tasks. If the Android process is restarted while a task is active, the next launch records that task as interrupted. This Activity-thread worker is not a persistent WorkManager/foreground service: it does not guarantee completion after process death and does not provide pause/resume/cancel.
+## وحدات USB وبطاقات SD
 
-The Kotlin source includes Python-generated QZRA 1.3 interoperability tests, and the GitHub Actions workflow is configured to install Gradle/JDK/Android SDK, run the Kotlin tests and build a debug APK. These tests/builds must complete successfully on GitHub before the update can be considered compiled or device-validated.
+- ربط وحدة USB أو SD يتم عبر Android Storage Access Framework ومنح إذن المجلد. يمكن تصفح ملفات QZRA وتصدير الأرشيف مع ملفاته المصاحبة.
+- بعد النسخ إلى الوحدة، يعيد التطبيق قراءة النسخة ويقارن SHA-256 قبل اعتبار التصدير ناجحًا.
+- هذا المسار لا يمنح التطبيق وصولًا خامًا إلى كل قطاعات الوحدة؛ الوصول يعتمد على دعم مزود ملفات Android والجهاز.
+
+## حدود المنصة والتحقق
+
+- محرك Kotlin وواجهة Android يدعمان QZRA 1.0–1.3. لا يوجد في تطبيق Android الحالي محول فعلي لصيغ ZIP أو 7z أو RAR أو TAR.
+- Android يربط WebDAV فقط؛ موصلات Drive/Dropbox/OneDrive/S3 OAuth ليست واجهات Android.
+- Android snapshots هي نسخ QZRA كاملة؛ التزايد وإزالة التكرار على مستوى الكتل متاحان في مستودع Python فقط.
+- Android لا يعرض إصلاح XOR في واجهة المستخدم ضمن هذه النسخة.
+- دعم RAR للقراءة/الإنشاء يتطلب مكتبة متوافقة وشروط ترخيص مناسبة؛ لا يتم إنشاء RAR بإعادة تنفيذ صيغة مملوكة.
+- QZRA تنسيق قيد التطوير ولم يخضع لتدقيق أمني مستقل. احتفظ دائمًا بنسخ احتياطية مستقلة للبيانات المهمة.
+- يجب تشغيل Gradle/JUnit وبناء APK على GitHub Actions أو جهاز تطوير يملك Android SDK، ثم اختبار WorkManager وقيود بطارية الجهاز ومزودي WebDAV/SAF ووحدات USB/SD على أجهزة وإصدارات Android فعلية قبل نشره. لا تعتبر تعديل المصدر وحده إثباتًا لبناء APK أو تحققًا على جهاز.

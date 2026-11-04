@@ -1,352 +1,236 @@
-<div align="center">
-  <img src="docs/assets/qamzor-overview.svg" alt="QAMZOR architecture overview" width="100%" />
+# QAMZOR
 
-  <h1>QAMZOR</h1>
-  <p><strong>A native archive format and data-management toolkit.</strong></p>
-  <p>Package files into QZRA archives. Verify integrity. Protect private data. Manage snapshots and recovery workflows.</p>
+> Current project version: **0.9.0**. Python and Kotlin Core contain QZRA 1.3 reader/writer paths; Android source includes private metadata and protected-folder flows. Kotlin/Android build acceptance remains pending the configured GitHub Actions run.
 
-  <p>
-    <a href="https://github.com/ibra8y3-web/QAMZOR/actions/workflows/platform-builds.yml"><img src="https://github.com/ibra8y3-web/QAMZOR/actions/workflows/platform-builds.yml/badge.svg" alt="Platform builds" /></a>
-    <a href="https://img.shields.io/github/license/ibra8y3-web/QAMZOR"><img src="https://img.shields.io/github/license/ibra8y3-web/QAMZOR" alt="Apache 2.0 license" /></a>
-    <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10 or newer" />
-    <img src="https://img.shields.io/badge/Project%20stage-Pre--alpha-orange" alt="Pre-alpha development" />
-  </p>
 
-  <p>
-    <a href="#features">Features</a> ·
-    <a href="#quick-start">Quick start</a> ·
-    <a href="#android">Android</a> ·
-    <a href="#security">Security</a> ·
-    <a href="#documentation">Documentation</a> ·
-    <a href="#contributing">Contributing</a>
-  </p>
-</div>
+**QAMZOR** is an open-source archive and data-management project. Its native container format is **QZRA** (`.qzra`).
 
----
+> Current source delivery: version 0.9.0. Python and Kotlin Core support QZRA 1.0–1.3. Android now includes searchable file/archive browsing, in-place archive/restore/verify jobs through WorkManager, password and signing-key vaults, scheduled local snapshots, version restore, Ed25519 signing, USB/SD SAF access, and HTTPS WebDAV archive upload/download/sync. The Android source has not yet passed a Gradle/APK build in this workspace; do not treat this ZIP as a device-validated release. Python has Google Drive/Dropbox/OneDrive/S3 adapters; native Android OAuth for those providers remains open. This is development software, not a production-audited archive system.
 
-## What is QAMZOR?
+## 0.9.0 Android additions
 
-**QAMZOR** is an open-source archive and data-management project built around its own container format: **QZRA (`.qzra`)**.
+- Search phone files by name or extension and sort by modified date, name, size or type. The chosen sort order is remembered; directory-first and hidden-file settings are available.
+- Search and sort the immediate contents of an opened QZRA directory. After the manifest is authenticated, format metadata shows actual QZRA version, encryption/privacy state, file/folder counts and uncompressed size.
+- Create an in-place QZRA beside a selected file/folder and fully verify it before optionally deleting the source. The user can disable source deletion in Settings.
+- Encrypted creation supports a master password and up to 32 independently password-protected folder scopes. Scoped passwords are not persisted and are authenticated against real file payload data before being cached for the session.
+- Restore, selected extraction, verification and comparison pass independent folder passwords to the core engine. Restore rolls back partially moved results when a later move fails; if deleting the archive fails after successful restoration, restored data and the archive are both preserved and the failure is reported.
+- The Settings page controls hidden files, directory-first sorting, source retention, destructive-action confirmations, private temporary-cache cleanup and operation-history retention.
+- Split a QZRA archive into numbered volume files with a `.qzset` descriptor and per-part/full-archive SHA-256 hashes. Reassembly checks order, size, every part digest and the complete archive digest before publishing output. Source archives and volume parts are retained.
+- Large phone-directory listings are loaded on a dedicated executor rather than the Android UI thread. Desktop archive tasks use SwingWorker and marshal Swing dialogs/components to the event-dispatch thread.
+- Android long-running archive, restore, verify, snapshot and WebDAV operations use WorkManager foreground execution, saved task descriptors, progress/byte-rate/ETA reporting, cooperative pause/resume and cancellation. WorkManager persists scheduling over Activity closure/reboot. If Android kills the process mid-operation, WorkManager can rerun the transactional task from its beginning; byte-offset continuation within an archive/cloud stream is not implemented.
 
-The project brings together a Python reference engine and CLI, plus Kotlin source projects for Android, desktop, and an SDK. The Python implementation focuses on real archive operations: chunking, compression, deduplication, integrity verification, encryption, signatures, recovery, snapshots, and cloud-provider adapters.
+## Implemented
 
-QAMZOR is actively evolving. It is currently **pre-alpha development software**, not a production-audited replacement for a mature backup system. Platform capabilities and test status are documented separately below so that source-code work is not confused with a verified release.
+- Python reference writer/reader supports QZRA 1.0–1.3; QZRA 1.3 adds encrypted metadata and independent folder-password scopes.
+- Content-defined chunks with fixed, documented deterministic boundary rules.
+- Independent zlib/DEFLATE or verbatim `store` compression for each chunk.
+- Deduplicates identical chunks across files inside the same archive by shared payload references.
+- Bounded ordered compression workers (`--workers` 1–32); default is one worker for predictable resource use.
+- SHA-256 integrity checks for every chunk and complete file.
+- AES-256-GCM payload encryption with scrypt key derivation; QZRA 1.3 encrypts the complete manifest and supports per-folder key scopes (`qamzor[crypto]`).
+- Detached Ed25519 signing and verification with password-protected PKCS#8 private keys.
+- Detached XOR recovery sidecars that recover one damaged block per parity group into a separate restored archive.
+- Local snapshot repository with immutable manifests, a SHA-256 object store, incremental snapshot reuse, verification, restore, retention planning and garbage collection.
+- Virtual archive search and verified bounded previews without extracting files.
+- Explicit extraction byte-count and file-count quotas.
+- Create/list/inspect/verify/extract CLI commands, including full and selected extraction; explicit `qz convert` packages files/folders into the native `.qzra` container without changing source files.
+- Additional CLI commands: `search`, `preview`, `keygen`, `sign`, `verify-signature`, `recover create/repair`, and `repo init/snapshot/list/verify/restore/prune/export-delta/apply-delta`.
+- Rejects symbolic-link sources, unsafe archive paths, case-insensitive path collisions, partial/invalid payload overlaps, malformed manifests, and unsafe extraction targets.
+- Uses temporary files and atomic publication for archive creation and extracted files.
+- Supports Python 3.10+ and has a GitHub Actions test workflow.
 
-## At a glance
+## Requirements
 
-| Area | What it provides | Current status |
-|---|---|---|
-| QZRA format | A versioned archive container for files and folders | Implemented in the Python reference engine |
-| Python Core and CLI | Create, inspect, verify, search, preview, compare, extract, sign, recover, and manage snapshots | Main executable reference implementation |
-| Encryption | AES-256-GCM with scrypt-based key derivation; QZRA 1.3 can encrypt the manifest | Implemented in the Python reference engine; client-platform acceptance is tracked separately |
-| Backup repositories | Immutable snapshots, content-addressed objects, restore, retention, and deltas | Python implementation |
-| Cloud adapters | WebDAV, Google Drive, Dropbox, OneDrive, and S3-compatible storage | Python CLI/Core only; live third-party account testing is not claimed |
-| Android | Native app source with a phone file browser and in-place archive/encrypt workflow in the latest development changelog | Development source; Gradle/JUnit/APK acceptance still required |
-| Desktop and Kotlin SDK | JVM desktop and shared Kotlin modules | Development source; verify the Platform Builds workflow before treating distributions as release-ready |
+- Python 3.10 or newer.
+- No third-party dependency is needed for unencrypted QZRA 1.0/1.1 operations.
+- Install the optional cryptography dependency for encrypted QZRA 1.2/1.3 and Ed25519: `python -m pip install -e '.[crypto]'`.
 
-## Features
-
-### Archive engine
-
-- **Native `.qzra` containers** with documented, versioned format rules.
-- **Content-defined chunking** with deterministic boundaries.
-- **Adaptive compression** per chunk using zlib/DEFLATE or storing the chunk unchanged when compression would make it larger.
-- **Deduplication** of identical chunks within an archive, plus content-addressed object reuse across repository snapshots.
-- **Bounded parallel compression workers** to limit queued work and memory pressure.
-- **SHA-256 integrity checks** for chunks and reconstructed files.
-- **Safe extraction controls**, including file-count and total-byte limits, path validation, and atomic output publication.
-
-### Privacy and authenticity
-
-- **AES-256-GCM encryption** with scrypt-derived keys for supported encrypted archive versions.
-- **QZRA 1.3 encrypted manifest** to conceal names, paths, sizes, digests, and the true entry count.
-- **Independent protected-folder scopes** in the Python reference implementation, with a configurable maximum of 32 scopes.
-- **Detached Ed25519 signatures** for archive authenticity when the verification public key is obtained through a trusted channel.
-- Passwords are not recoverable. Losing an archive password can make the protected data inaccessible.
-
-### Archive and backup workflows
-
-- Virtual archive search and bounded previews without extracting every entry.
-- Full extraction or extraction of a selected file/folder subtree.
-- Archive comparison by path, type, size, and digest metadata.
-- Split large archives into volumes and reassemble them with integrity checks.
-- XOR recovery sidecars for limited single-block recovery.
-- Local snapshot repositories with verification, restore, retention planning, and garbage collection.
-- Direct-child repository delta export and application.
-- Smart exclusions using command-line patterns and `.qzignore` files.
-- Bounded text extraction for supported Office files in the Python preview workflow.
-- Python job API for queued archive-creation jobs with progress and checkpoint-based pause/resume/cancel.
-
-### Platform boundaries
-
-A feature available in the Python CLI is **not automatically available in the Android or desktop UI**. In particular, cloud-provider login/sync, the Python Job Center, repository management, signatures, and recovery workflows should not be assumed to exist in the Android app unless a platform-specific implementation and its tests are documented.
-
-## How QZRA works
-
-The following is a conceptual view of the Python archive pipeline. Optional encryption and metadata hiding depend on the selected QZRA version and command options.
-
-```mermaid
-flowchart LR
-    A[Files and folders] --> B[Validate paths and inputs]
-    B --> C[Split into deterministic chunks]
-    C --> D[Compress or store each chunk]
-    D --> E[Reuse duplicate chunk payloads]
-    E --> F{Encryption enabled?}
-    F -- Yes --> G[Authenticate and encrypt]
-    F -- No --> H[Write archive records]
-    G --> I[Write QZRA container]
-    H --> I
-    I --> J[Verify archive and file digests]
-```
-
-### QZRA format generations
-
-| Version | Main capability | Notes |
-|---|---|---|
-| QZRA 1.0 | Legacy archive entries | Retained for compatibility by the Python reference reader/writer |
-| QZRA 1.1 | Chunked archive layout | Content-defined chunks, adaptive zlib/store coding, and deduplicated payload references |
-| QZRA 1.2 | Authenticated encryption | AES-256-GCM protected payloads and authenticated manifest; metadata remains visible |
-| QZRA 1.3 | Encrypted metadata | Encrypts the complete manifest; Python implementation also supports independent protected-folder scopes |
-
-See the [QZRA format specification](docs/QZRA_FORMAT.md) for the binary layout and compatibility details.
-
-## Quick start
-
-### Requirements
-
-- Python **3.10 or newer**.
-- For unencrypted QZRA 1.0/1.1 operations, the Python standard library is sufficient.
-- Install the optional `cryptography` dependency for encryption and Ed25519 signing.
-
-### Install from source
+## Install and test
 
 ```bash
-git clone https://github.com/ibra8y3-web/QAMZOR.git
-cd QAMZOR
-
-# Install the package and CLI
 python -m pip install -e .
-
-# Optional: enable encryption and Ed25519 signing
-python -m pip install -e ".[crypto]"
-
-# Check the command-line interface
+python -m unittest discover -s tests -v
 qz --help
 ```
 
-### Create and inspect an archive
+Or run directly from the source tree with `PYTHONPATH=src`.
+
+## Commands
 
 ```bash
-# Package a folder into a native QZRA archive
+# Convert files/folders to native QZRA using the balanced profile and two compression workers
 qz convert project.qzra ./project --profile balanced --workers 2
+# The compatible `qz create` command remains available
+qz create another-project.qzra ./project
+# Optional QZRA 1.2 encrypted archive (names remain visible)
+qz create private-v12.qzra ./private --encrypt
+# QZRA 1.3: encrypt names, paths and manifest metadata
+qz create private-v13.qzra ./private --hide-metadata
+# QZRA 1.3: additionally assign a separate password to an archive-relative folder
+qz create protected.qzra ./Project --protect-folder 'Project/Finance'
 
-# List entries and inspect archive metadata
+# List entries / inspect metadata / verify every file
 qz list project.qzra
 qz inspect project.qzra
-
-# Verify every file and its integrity digests
 qz verify project.qzra
-
-# Search and preview an entry without extracting the entire archive
 qz search project.qzra README --kind file
 qz preview project.qzra project/README.md --max-bytes 65536
 
-# Extract everything, or only one selected file
+# Extract everything or selected content
 qz extract project.qzra --output ./restored
-qz extract project.qzra --output ./selected --file project/README.md
-```
+qz extract project.qzra --output ./restored --file project/README.md --max-files 1000 --max-total-bytes 1073741824
 
-### Encrypt an archive
-
-```bash
-# QZRA 1.2: encrypt archive payloads; manifest names remain visible
-qz create private-v12.qzra ./private --encrypt
-
-# QZRA 1.3: encrypt the complete manifest and hide file metadata
-qz create private-v13.qzra ./private --hide-metadata
-
-# Give an archive-relative folder its own password scope
-qz create protected.qzra ./Project --protect-folder 'Project/Finance'
-```
-
-The CLI prompts for passwords rather than requiring them as command-line arguments. For automated workflows, use protected password files and keep them outside source control. See the security documentation before storing sensitive data.
-
-### Sign and recover
-
-```bash
-# Generate an encrypted Ed25519 signing key pair
+# Signing keys, detached signatures and verification
 qz keygen --private-key signing-private.pem --public-key signing-public.pem
-
-# Sign an archive and verify it against a trusted public key
 qz sign project.qzra --private-key signing-private.pem
 qz verify-signature project.qzra --public-key signing-public.pem --signature project.qzra.qzsig
 
-# Create a recovery sidecar, then repair into a separate output archive
+# Recovery sidecar and non-destructive repair to a new output file
 qz recover create project.qzra --output project.qzra.qzrec
 qz recover repair damaged.qzra project.qzra.qzrec --output project.repaired.qzra
-```
 
-XOR recovery can repair **at most one damaged block per parity group**. It is not multi-error Reed–Solomon recovery and does not replace independent backups.
-
-### Local snapshots
-
-```bash
+# Local backup repository: initialize, snapshot, list, verify and restore
 qz repo init ./backup.qamzor
 qz repo snapshot ./backup.qamzor ./project --message "before update"
 qz repo list ./backup.qamzor
 qz repo verify ./backup.qamzor
 qz repo restore ./backup.qamzor SNAPSHOT_ID --output ./restored
-
-# Preview a retention plan; add --apply only when ready to execute it
+# Preview retention / garbage-collection plan; add --apply to execute it
 qz repo prune ./backup.qamzor --keep-last 10
-
-# Export/apply a direct-child delta when the exact base snapshot exists
+# Export a direct-child delta and apply it on a repository containing the base snapshot
 qz repo export-delta ./backup.qamzor BASE_SNAPSHOT_ID TARGET_SNAPSHOT_ID --output update.qzd
 qz repo apply-delta ./restored-backup.qamzor update.qzd
 ```
 
-### Other useful commands
+Compression profiles are `speed` (zlib level 1), `balanced` (level 6), and `maximum` (level 9). The writer stores a chunk verbatim when compression would not reduce its size. For encrypted `verify`, `extract`, and `preview` commands, the CLI prompts for the password; a protected password file can be supplied with `--password-file`. Install `qamzor[crypto]` for AES-GCM and Ed25519 features. Use `--key-password-file` when signing with an encrypted private key.
+
+## Encryption, signatures and recovery
+
+QZRA 1.2 uses AES-256-GCM with scrypt-derived keys and authenticated but visible manifest metadata. QZRA 1.3 encrypts the complete manifest, hiding names, paths, sizes and the true entry count, and permits up to 32 independently password-protected folder scopes. The archive master password is required to view metadata; the corresponding folder password is additionally required to read data in a protected folder. Nested scopes use the deepest folder's password. Password recovery is unavailable. Detached Ed25519 signatures require users to trust and pin the supplied public key through a separate trusted channel. XOR recovery sidecars repair at most one damaged block per parity group; they are not multi-error Reed-Solomon data and do not replace independent backups.
+
+For encrypted archives, `list`, `search` and `inspect` can display the visible manifest without a password; `verify`, `preview` and `extract` require the passphrase. The CLI prompts interactively or reads it from a protected `--password-file`. `qz keygen` prompts for a password and stores the Ed25519 private key as encrypted PKCS#8 PEM.
+
+## Benchmark
+
+Run the reproducible local comparison against Python ZIP/DEFLATE and, when a 7z CLI or buildable libarchive adapter is available, 7z:
 
 ```bash
-# Exclude generated files from an archive
-qz convert clean.qzra ./Project --exclude 'build/' --exclude '*.tmp'
-qz convert clean.qzra ./Project --exclude-from ./exclude-rules.txt
-
-# Compare two archives by metadata and file digests
-qz compare old.qzra new.qzra
-
-# Split and reassemble a large archive
-qz split backup.qzra ./backup-volumes --part-size-mib 100
-qz join ./backup-volumes/backup.qzra.qzset ./backup-restored.qzra
-
-# Preview text from supported Office documents (Python CLI)
-qz preview documents.qzra Project/Report.docx --office
+python tools/benchmark.py --size-mib 8 --workers 2 --output benchmark-results/local.json
 ```
 
-Compression profiles are `speed` (zlib level 1), `balanced` (level 6), and `maximum` (level 9). A chunk is stored unchanged whenever compression would not reduce its size.
+The checked-in `benchmark-results/local-2026-11-03.json` is a single local run on Linux x86_64, Python 3.13.5, zlib 1.3.1 and libarchive 3.7.4. Its dataset contains 6 MiB total: a 2 MiB repeated file, a 2 MiB pseudorandom file and an exact 2 MiB duplicate. QAMZOR verified all data and wrote a 2,105,752-byte archive; ZIP/DEFLATE wrote 2,110,466 bytes; the libarchive 7z writer wrote 2,126,597 bytes. Measured creation times were approximately 1.109 s, 0.063 s and 0.748 s respectively. This fixture demonstrates deduplication behavior, not a general performance ranking; results depend on input data, hardware and implementation.
 
-## Cloud storage adapters
+## Format and security notes
 
-The Python CLI contains development adapters for:
+See [`docs/QZRA_FORMAT.md`](docs/QZRA_FORMAT.md), [`docs/REPOSITORY_FORMAT.md`](docs/REPOSITORY_FORMAT.md) and [`docs/SECURITY.md`](docs/SECURITY.md). QZRA 1.0–1.3 and the repository/delta formats are development specifications and have not had an independent security audit. Kotlin QZRA 1.3 interoperability fixtures/tests are authored but await GitHub Gradle CI; do not use this prototype as the only copy of important data.
 
-- Google Drive API v3
-- Dropbox API v2
-- Microsoft Graph OneDrive
-- AWS S3 and S3-compatible object storage
-- WebDAV-compatible HTTPS storage
+## Project status
 
-These adapters use credentials supplied at runtime. They do **not** provide an Android cloud-sync interface or a complete interactive OAuth sign-in/refresh flow. The project has not claimed successful end-to-end testing against a user's live cloud account.
-
-Example using an already-issued Google Drive access token:
-
-```bash
-export QAMZOR_GOOGLE_DRIVE_ACCESS_TOKEN="YOUR_SHORT_LIVED_TOKEN"
-qz cloud-provider push google-drive backup.qzra
-```
-
-For S3-compatible storage, supply the bucket, region, access key, secret key, and optional endpoint through environment variables. Never commit credentials, tokens, `.env` files, or private keys to the repository.
-
-See [Cloud connectors](docs/CLOUD_CONNECTORS.md) for permissions, environment variables, and restore behavior.
-
-## Android
-
-The latest development changelog describes an Android file-browser and in-place archive workflow:
-
-- Browse internal shared storage and an SD card from the app.
-- Select files and folders from the device browser.
-- Create a `.qzra` file beside the selected source item.
-- Open a QZRA file from QAMZOR or a compatible file manager, then browse, restore, or run an integrity check.
-- The development encryption flow uses QZRA 1.3 metadata hiding and requests an archive password.
-
-> [!CAUTION]
-> **The in-place Archive/Encrypt action is destructive by design.** According to the current development changelog, the app verifies the new archive and checks the source before deleting the original item. A successful operation therefore leaves the archive in place of the original source. Keep a separate backup before using this workflow, especially while the Android build is still under development.
-
-**Build and release status:** Android source and CI steps are present, but a successful Gradle build, APK artifact, unit-test run, and physical-device test must be confirmed in [Platform Builds](https://github.com/ibra8y3-web/QAMZOR/actions/workflows/platform-builds.yml). Do not treat the app as a verified release until those checks pass.
-
-Android storage access also depends on the Android version and installation method. The current development changelog states that Android 11+ requires **All files access** (`MANAGE_EXTERNAL_STORAGE`), and that sideloaded builds are the intended distribution path. Review the permission prompt and Android release requirements before installing.
-
-## Security model and limitations
-
-QAMZOR includes defensive parsing and integrity checks, but it has **not** received an independent security audit. Important boundaries:
-
-- QZRA 1.3 hides manifest metadata, but archive length and some access-pattern information can still be observable.
-- QZRA 1.2 does not hide file names or manifest metadata.
-- AES-GCM and Ed25519 depend on the installed `cryptography` implementation and sound password/key handling.
-- A valid Ed25519 signature is meaningful only when the public key is trusted and verified through a separate channel.
-- Cloud SHA-256 sidecars detect accidental corruption, but a party able to replace both an archive and its sidecar can replace the digest too. Use a detached signature when authenticity is required.
-- XOR recovery is limited to one damaged block per parity group; it is not a substitute for tested independent backups.
-- Password recovery is not supported.
-- File permissions, ownership, timestamps, ACLs, and symbolic links are not preserved as ordinary archive contents; symbolic-link sources are rejected by the Python reference engine.
-- The project is pre-alpha. Do not use it as the only copy of important data.
-
-Read the full [security model](docs/SECURITY.md) before using encryption, signatures, recovery, or cloud storage.
-
-## Tests and development status
-
-Run the Python test suite from the repository root:
-
-```bash
-python -m pip install pytest
-PYTHONPATH=src python -m pytest -q
-```
-
-The repository also contains Gradle modules for Kotlin Core, Android, desktop, and the SDK. Their build and test acceptance is tracked by the [Platform Builds workflow](https://github.com/ibra8y3-web/QAMZOR/actions/workflows/platform-builds.yml). A workflow definition is not proof that a build has passed; check its latest run and uploaded artifacts.
-
-### Version-label note
-
-The repository's current development labels are not fully synchronized: the latest `CHANGELOG.md` entry is `0.9.0-dev`, while the Python package metadata in `pyproject.toml` currently reports `0.7.2.dev0`. Until those are aligned, use the changelog and CI results for development history rather than treating either label as a stable public release number.
-
-## Project structure
-
-```text
-QAMZOR/
-├── androidApp/           # Android application source
-├── core/                 # Shared Kotlin core source
-├── desktopApp/            # JVM desktop application source
-├── sdk/                  # Kotlin SDK source
-├── src/qamzor/            # Python reference engine and CLI package
-├── tests/                 # Python tests
-├── docs/                  # Format, security, product, and API documentation
-├── fixtures/              # Cross-implementation test fixtures
-├── tools/                 # Benchmarks and developer utilities
-├── benchmark-results/     # Recorded benchmark outputs
-├── .github/workflows/     # CI workflows
-├── ARCHITECTURE.md
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-├── ROADMAP.md
-├── STATUS.md
-└── README.md
-```
-
-## Documentation
-
-| Document | Description |
-|---|---|
-| [Architecture](ARCHITECTURE.md) | Current components, engines, and target architecture |
-| [QZRA format](docs/QZRA_FORMAT.md) | Archive format and binary layout |
-| [Repository format](docs/REPOSITORY_FORMAT.md) | Snapshot and delta storage design |
-| [Security model](docs/SECURITY.md) | Threat model, guarantees, and limitations |
-| [Product feature matrix](docs/PRODUCT_FEATURES.md) | Python capabilities vs. platform UI integration |
-| [Cloud connectors](docs/CLOUD_CONNECTORS.md) | Provider permissions, credentials, and operations |
-| [Job Center API](docs/JOB_CENTER_API.md) | Python background-job API |
-| [Changelog](CHANGELOG.md) | Development history |
-| [Roadmap](ROADMAP.md) | Gated project milestones |
-| [Status](STATUS.md) | Recorded implementation and test evidence |
-| [Contributing](CONTRIBUTING.md) | How to contribute |
-
-## Contributing
-
-Contributions, bug reports, documentation fixes, and reproducible test cases are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-
-For security-sensitive issues, avoid posting exploit details or private data in a public issue. Follow the repository's security policy where available.
+See [`STATUS.md`](STATUS.md) for exact completion state and test evidence. The roadmap is in [`ROADMAP.md`](ROADMAP.md). Repository snapshots are full logical tree manifests with file-level content-addressed reuse. Direct-child `.qzd` delta files can be exported and applied when the exact base snapshot is already present in the destination repository. See [`docs/REPOSITORY_FORMAT.md`](docs/REPOSITORY_FORMAT.md) for the repository and delta format details.
 
 ## License
 
-QAMZOR is distributed under the **Apache License 2.0**. See [LICENSE](LICENSE).
+Apache-2.0. See [`LICENSE`](LICENSE).
 
----
 
-<div align="center">
-  <sub>QAMZOR · Open archive tooling built around the QZRA format · Pre-alpha development</sub>
-</div>
+## Android, desktop and Kotlin SDK (development source implementation)
+
+The repository includes Gradle modules for a native Android app (`androidApp`), a JVM desktop app (`desktopApp`), a shared Kotlin engine (`core`) and a pre-1.0 Kotlin SDK (`sdk`). Kotlin Core source now reads and writes QZRA 1.0–1.3; its default writer remains QZRA 1.1, an archive password selects encrypted QZRA 1.2, and `encryptMetadata=true` selects QZRA 1.3. QZRA 1.3 adds encrypted metadata and up to 32 independently protected folder scopes. Kotlin golden-fixture JUnit tests are authored but must pass on GitHub Actions before interoperability is certified.
+
+The Android app is now an in-place QZRA file-vault workflow: it writes a verified `.qzra` next to the selected file or folder and uses a persisted setting to decide whether the original should be retained or removed only after successful verification. It supports a master password and up to 32 independent QZRA 1.3 folder-password scopes. Folder keys are held only in the active session and are tested against payload data before being cached. The Settings tab controls hidden-file visibility, directory-first sorting, source retention, destructive-action confirmations, app-private temporary-cache cleanup and operation-history retention.
+
+Its **Virtual Archive Explorer** opens QZRA manifests, navigates and searches directory contents, reads and verifies a selected file directly from compressed archive blocks, and retains only bounded preview bytes. It supports text previews (2 MiB), PNG/JPEG/GIF/WEBP/BMP previews (16 MiB), and first-page PDF previews (16 MiB). Previewing does not unpack archive entries to user storage, though the archive container may be copied to private cache for random-access reads. Every successful file preview verifies the entire selected file's chunk and whole-file SHA-256 digests. The explorer can extract one file, one folder subtree or the complete archive. Restore uses a temporary staging directory and rollback for partial moves. DOCX/XLSX/ODT rendering and audio/video preview are not implemented; unsupported types can be extracted and opened with another application.
+
+The Kotlin core now has cross-language fixtures and JUnit tests for QZRA 1.0/1.1/1.2/1.3 reading, QZRA 1.3 writing, independent folder unlock, virtual folder navigation, bounded preview, selected extraction and wrong-password rejection. These JUnit tests still require a successful Gradle run on GitHub. Do not treat the updated Android UI as release-ready until `Platform builds` succeeds and the new APK passes physical-device, large-file, SAF-provider, lifecycle and low-storage tests. See [Android user guide](docs/ANDROID_USER_GUIDE.md) and [Kotlin implementation status](docs/KOTLIN_IMPLEMENTATION.md).
+
+See [Kotlin SDK guide](docs/KOTLIN_SDK.md) and [GitHub publishing instructions](GITHUB_SETUP.md).
+
+
+### Convert ordinary files and folders to native QZRA
+
+```bash
+qz convert backup.qzra ./folder file.txt
+```
+
+This is lossless archive packaging, not media/document transcoding. Original file bytes and relative paths are preserved inside the `.qzra` container.
+
+## QZRA 1.3 — encrypted metadata and protected folders
+
+The Python reference engine and Kotlin Core source now implement QZRA 1.3. Version 1.3 encrypts the complete manifest with AES-256-GCM, so file names, directory names, paths, sizes, digests and the true entry count are not stored in plaintext. Opening/listing a 1.3 archive requires its archive master password.
+
+Folders may also use independent passwords. Each protected folder receives its own scrypt-derived key; files under that folder require the matching folder password for preview, verification or extraction. If protected folders are nested, the deepest protected folder's password applies to its descendants. A maximum of 32 protected folders is enforced by the reference implementation.
+
+Install the crypto extra:
+
+```sh
+python -m pip install -e '.[crypto]'
+```
+
+Create an archive with hidden metadata:
+
+```sh
+qz create private.qzra ./Project --hide-metadata
+```
+
+Create an archive with a separate password for a folder (the folder path is relative to the archive root):
+
+```sh
+qz create private.qzra ./Project --protect-folder 'Project/Finance'
+```
+
+The CLI securely prompts for the archive master password and each protected-folder password; they are not accepted as command-line arguments. Use protected password files for automated reading:
+
+```sh
+qz list private.qzra --password-file ./master-password.txt
+qz verify private.qzra --password-file ./master-password.txt \
+  --folder-password-file 'Project/Finance=./finance-password.txt'
+```
+
+QZRA 1.0, 1.1 and 1.2 remain readable. Kotlin/Android 1.3 source support and Python-generated interop tests are now included; remote Gradle/JUnit success remains pending. QZRA 1.3 remains a development format pending independent security review.
+
+A Python-generated protected-folder golden archive used by Kotlin cross-language tests is in [`fixtures/qzra-1.3/`](fixtures/qzra-1.3/). Its public test-only credentials and expected unlock behavior are documented beside the fixture; never use them for personal data.
+
+## Product feature expansion — Smart Exclusions, Volumes, Compare, Preview, Jobs and WebDAV
+
+The Python reference engine/CLI includes these additional workflows. Android 0.9.0 also exposes file/archive search and sorting, QZRA 1.3 creation/unlock, archive format details, verified split/reassembly volumes, WorkManager jobs, local snapshots, Ed25519 signing, USB/SD SAF and WebDAV account/sync UI. Smart Exclusions, Office preview and native OAuth screens for Drive/Dropbox/OneDrive/S3 remain Python-only or open platform work. See [`docs/PRODUCT_FEATURES.md`](docs/PRODUCT_FEATURES.md) for the exact platform matrix and limitations.
+
+```bash
+# Smart exclusions: command-line patterns plus root/nested .qzignore files
+qz convert clean.qzra ./Project --exclude 'build/' --exclude '*.tmp'
+qz convert clean.qzra ./Project --exclude-from ./exclude-rules.txt
+
+# Compare two archives by path/type/size/SHA-256 metadata (no extraction)
+qz compare old.qzra new.qzra
+qz compare private-old.qzra private-new.qzra \
+  --left-password-file ./old-master.txt --right-password-file ./new-master.txt
+
+# Split large QZRA into 100 MiB volumes and reassemble with per-part checksums
+qz split backup.qzra ./backup-volumes --part-size-mib 100
+qz join ./backup-volumes/backup.qzra.qzset ./backup-restored.qzra
+
+# Extract readable text from DOCX/XLSX/PPTX inside QZRA without writing the file to the chosen folder
+qz preview documents.qzra Project/Report.docx --office
+qz preview documents.qzra Project/Budget.xlsx --office
+qz preview presentations.qzra Project/Slides.pptx --office
+
+# WebDAV-compatible HTTPS backup (password prompted; not stored)
+qz cloud push backup.qzra --url 'https://dav.example.net/remote.php/dav/files/user/QAMZOR/' --username USER
+qz cloud pull backup.qzra restored.qzra --url 'https://dav.example.net/remote.php/dav/files/user/QAMZOR/' --username USER
+```
+
+Background create jobs are available through the `JobCenter` Python API, including progress, cooperative pause/resume/cancel and persistent secret-free job state. See [`docs/JOB_CENTER_API.md`](docs/JOB_CENTER_API.md). A process restart marks unfinished jobs as interrupted instead of automatically resuming against potentially changed source files.
+
+Arabic implementation and operator notes for the added product features: [`docs/PRODUCT_FEATURES_AR.md`](docs/PRODUCT_FEATURES_AR.md). Final local validation details are in [`VALIDATION_RESULTS.txt`](VALIDATION_RESULTS.txt).
+
+
+## Native cloud-provider backups
+
+Python Core/CLI includes development HTTPS adapters for Google Drive, Dropbox, OneDrive and AWS/S3-compatible storage, in addition to WebDAV. They write checksum sidecars and verify size/SHA-256 before publishing restored files. The adapters require short-lived OAuth bearer tokens or S3 credentials supplied through runtime environment variables; interactive OAuth consent/refresh flow is not included. Android currently exposes HTTPS WebDAV account management, upload, verified download, and safe two-way sync for top-level `.qzra` files only. Drive/Dropbox/OneDrive/S3 OAuth account screens are not yet available in Android. See [`docs/CLOUD_CONNECTORS.md`](docs/CLOUD_CONNECTORS.md) for provider permissions, secrets and commands.
+
+The Android operation center observes WorkManager jobs and displays phase, progress, completed/total bytes, measured speed, estimated remaining time, file counts, result/error and cloud conflicts. Archive creation, restore, verification, local snapshot backup/restore/verification and WebDAV push/pull/sync use persistent WorkManager requests with pause/resume/cancel controls. A task surviving process death is safely re-enqueued by WorkManager but restarts the current transaction from its beginning rather than resuming at an exact byte offset. Phone-directory listing/sorting is performed off the UI thread.
+
+## Product strategy (Arabic)
+
+- [رؤية المنتج العالمية وخارطة التنفيذ](GLOBAL_PRODUCT_VISION_AR.md)
+- [المقارنة السوقية والبحث عن المنافسين](COMPETITIVE_RESEARCH_AR.md)
+

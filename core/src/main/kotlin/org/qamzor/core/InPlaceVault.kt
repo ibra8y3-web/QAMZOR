@@ -20,6 +20,7 @@ import java.nio.file.LinkOption
 object InPlaceVault {
     private const val SPACE_MARGIN = 16L * 1024 * 1024
     private const val MAX_REPORTED_PATHS = 5000
+    private const val RESTORE_WORK_TTL_MS = 7L * 24 * 60 * 60 * 1000
 
     data class SealResult(
         val archive: File,
@@ -32,6 +33,7 @@ object InPlaceVault {
     )
 
     private data class Snapshot(val files: Int, val directories: Int, val bytes: Long, val newest: Long)
+    private class ArchiveDeleteException(message: String) : IllegalStateException(message)
 
     /** True when the file is a QZRA 1.2/1.3 archive, which always requires a password. */
     @JvmStatic
@@ -41,10 +43,13 @@ object InPlaceVault {
                 if (input.length() < 12) {
                     false
                 } else {
-                    input.seek(8)
+                    val signature = ByteArray(8)
+                    input.readFully(signature)
+                    val expected = byteArrayOf(0x51, 0x5A, 0x52, 0x41, 0x0D, 0x0A, 0x1A, 0x0A)
+                    if (!signature.contentEquals(expected)) return@use false
                     val major = input.readUnsignedShort()
                     val minor = input.readUnsignedShort()
-                    major == 1 && minor >= 2
+                    major == 1 && minor in 2..3
                 }
             }
         } catch (_: Exception) {
@@ -62,8 +67,19 @@ object InPlaceVault {
      */
     @JvmStatic
     @JvmOverloads
-    fun seal(source: File, password: String? = null, deleteOriginal: Boolean = true): SealResult {
+    fun seal(
+        source: File,
+        password: String? = null,
+        deleteOriginal: Boolean = true,
+        folderPasswords: Map<String, String> = emptyMap(),
+        onProgress: ((ArchiveEngine.OperationProgress) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null
+    ): SealResult {
         require(password == null || password.isNotEmpty()) { "Password must not be empty" }
+        require(folderPasswords.isEmpty() || !password.isNullOrEmpty()) {
+            "A master archive password is required for independently protected folders"
+        }
+        require(folderPasswords.size <= 32) { "At most 32 independently protected folders are supported" }
         val src = source.absoluteFile
         require(Files.exists(src.toPath(), LinkOption.NOFOLLOW_LINKS)) { "Source does not exist: ${src.path}" }
         require(!Files.isSymbolicLink(src.toPath())) { "Symbolic links are not supported" }
@@ -81,20 +97,27 @@ object InPlaceVault {
         val target = uniqueFile(parent, src.name, ".qzra")
         val created = try {
             ArchiveEngine.convertToQzra(
-                target, listOf(src), password = password, encryptMetadata = password != null
+                target, listOf(src), password = password,
+                encryptMetadata = password != null || folderPasswords.isNotEmpty(),
+                folderPasswords = folderPasswords,
+                onProgress = onProgress,
+                isCancelled = isCancelled
             )
         } catch (error: Exception) {
             target.delete()
             throw error
         }
         try {
-            val verified = ArchiveEngine.verify(target, password)
+            val verified = ArchiveEngine.verify(target, password, folderPasswords,
+                onProgress = { value -> onProgress?.invoke(value.copy(phase = "verifying")) },
+                isCancelled = isCancelled)
             require(verified.valid && verified.filesChecked == created.files) { "Archive verification failed" }
             require(created.files == before.files && created.originalBytes == before.bytes) {
                 "The item changed while it was being archived; nothing was removed"
             }
             val after = snapshot(src)
             require(after == before) { "The item changed while it was being archived; nothing was removed" }
+            if (isCancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled before source removal")
         } catch (error: Exception) {
             target.delete()
             throw error
@@ -121,7 +144,9 @@ object InPlaceVault {
         archive: File,
         password: String?,
         removeArchive: Boolean,
-        folderPasswords: Map<String, String> = emptyMap()
+        folderPasswords: Map<String, String> = emptyMap(),
+        onProgress: ((ArchiveEngine.OperationProgress) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null
     ): List<File> {
         val parent = archive.absoluteFile.parentFile ?: error("Invalid archive location")
         require(parent.canWrite()) { "No write access to ${parent.path}" }
@@ -132,20 +157,45 @@ object InPlaceVault {
             "Not enough free space: need about ${needed / (1024 * 1024)} MB free"
         }
         val topNames = entries.map { it.path.substringBefore('/') }.distinct()
+        cleanupStaleRestoreWork(parent)
         val work = File(parent, ".qamzor-restore-${System.nanoTime()}")
         require(work.mkdir()) { "Cannot create a work folder in ${parent.path}" }
+        val restored = ArrayList<File>()
         try {
-            ArchiveEngine.extract(archive, work, false, password, folderPasswords)
-            val restored = ArrayList<File>()
+            ArchiveEngine.extract(archive, work, false, password, folderPasswords, onProgress, isCancelled)
             for (name in topNames) {
+                if (isCancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled during restore")
                 val produced = File(work, name)
                 require(produced.exists()) { "Extraction did not produce: $name" }
                 val destination = uniqueRestoreTarget(parent, name)
                 Files.move(produced.toPath(), destination.toPath())
                 restored += destination
             }
-            if (removeArchive) archive.delete()
+            if (isCancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled before archive cleanup")
+            if (removeArchive) {
+                val deleted = archive.delete()
+                if (!deleted && archive.exists()) {
+                    // Restored files are complete and verified. Keep them even though archive cleanup failed.
+                    throw ArchiveDeleteException("Content was restored successfully, but the archive could not be deleted: ${archive.name}. The restored files are safe and the archive remains available.")
+                }
+            }
             return restored
+        } catch (failure: Exception) {
+            if (failure !is ArchiveDeleteException) {
+                val rollbackFailures = restored.asReversed().filter { item ->
+                    try {
+                        deleteTree(item)
+                        item.exists()
+                    } catch (_: Exception) { true }
+                }
+                if (rollbackFailures.isNotEmpty()) {
+                    throw IllegalStateException(
+                        "Restore failed and ${rollbackFailures.size} partially restored item(s) could not be rolled back safely. Original archive remains available.",
+                        failure
+                    )
+                }
+            }
+            throw failure
         } finally {
             work.deleteRecursively()
         }
@@ -161,7 +211,9 @@ object InPlaceVault {
         archive: File,
         path: String,
         password: String?,
-        folderPasswords: Map<String, String> = emptyMap()
+        folderPasswords: Map<String, String> = emptyMap(),
+        onProgress: ((ArchiveEngine.OperationProgress) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null
     ): File {
         val parent = archive.absoluteFile.parentFile ?: error("Invalid archive location")
         require(parent.canWrite()) { "No write access to ${parent.path}" }
@@ -172,10 +224,13 @@ object InPlaceVault {
         require(parent.usableSpace >= needed) {
             "Not enough free space: need about ${needed / (1024 * 1024)} MB free"
         }
+        cleanupStaleRestoreWork(parent)
         val work = File(parent, ".qamzor-restore-${System.nanoTime()}")
         require(work.mkdir()) { "Cannot create a work folder in ${parent.path}" }
         try {
-            ArchiveEngine.extractSelected(archive, work, setOf(path), password = password, folderPasswords = folderPasswords)
+            ArchiveEngine.extractSelected(archive, work, setOf(path), password = password,
+                folderPasswords = folderPasswords, onProgress = onProgress, isCancelled = isCancelled)
+            if (isCancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled before extracted item was published")
             val produced = File(work, path)
             require(produced.exists()) { "Extraction did not produce: $path" }
             val destination = uniqueRestoreTarget(parent, path.substringAfterLast('/'))
@@ -187,6 +242,31 @@ object InPlaceVault {
     }
 
     // ───────────────────────────── helpers ─────────────────────────────
+
+    /**
+     * Remove only abandoned QAMZOR restore workspaces older than seven days.
+     * Recent folders may belong to another live process and are deliberately preserved.
+     */
+    private fun cleanupStaleRestoreWork(parent: File): Int {
+        val cutoff = System.currentTimeMillis() - RESTORE_WORK_TTL_MS
+        var removed = 0
+        parent.listFiles()?.forEach { candidate ->
+            if (!candidate.name.startsWith(".qamzor-restore-") || !candidate.isDirectory || Files.isSymbolicLink(candidate.toPath())) return@forEach
+            val newest = try {
+                Files.walk(candidate.toPath()).use { stream ->
+                    val iterator = stream.iterator()
+                    var latest = candidate.lastModified()
+                    while (iterator.hasNext()) {
+                        val path = iterator.next()
+                        if (!Files.isSymbolicLink(path)) latest = maxOf(latest, path.toFile().lastModified())
+                    }
+                    latest
+                }
+            } catch (_: Exception) { Long.MAX_VALUE }
+            if (newest < cutoff && candidate.deleteRecursively()) removed++
+        }
+        return removed
+    }
 
     private fun snapshot(root: File): Snapshot {
         if (root.isFile) return Snapshot(1, 0, root.length(), root.lastModified())
@@ -223,7 +303,9 @@ object InPlaceVault {
     }
 
     private fun deleteTree(root: File) {
-        if (root.isDirectory) root.deleteRecursively() else root.delete()
+        if (!root.exists()) return
+        val deleted = if (root.isDirectory) root.deleteRecursively() else root.delete()
+        require(deleted || !root.exists()) { "Could not remove ${root.path}" }
     }
 
     private fun uniqueFile(parent: File, baseName: String, suffix: String): File {

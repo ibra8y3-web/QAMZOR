@@ -1,48 +1,42 @@
 # QAMZOR — Current execution status
 
-> **Snapshot: 0.7.2-dev — 2026-11-03.** This status supersedes older phase notes and reports in this repository. Python tests were rerun after the current changes. Kotlin/Android source has been updated, but Gradle/JUnit/APK results are intentionally left pending until GitHub Actions runs.
+> **Source snapshot: 0.9.0 — 2026-11-04.** This package contains new Android WorkManager, backup, WebDAV, secret-vault, signature and USB/SD integrations. Python tests were run in this workspace. Android Gradle compilation, APK generation, Kotlin JUnit execution and physical-device acceptance were not available here and remain release gates.
 
-## Verified in this workspace
+## Android functionality implemented in source
 
-- Python QZRA reference engine: QZRA 1.0–1.3 read/write, encrypted manifest, independent folder scopes, chunk integrity, selective extraction, signatures, recovery, repository snapshots, deltas, split/join, compare, exclusions, Office text preview and WebDAV.
-- Cloud-provider adapters: Google Drive API v3, Dropbox API v2, Microsoft Graph OneDrive, and AWS Signature V4 S3-compatible transport. They use runtime OAuth tokens/keys, upload resumable/session content (S3 multipart above 5 GiB), publish a SHA-256 sidecar and verify the restored object's size/digest/header before publishing it locally.
-- Local cloud tests use an in-memory provider test double plus S3 request/signature construction tests. No live provider account or token was available; real-account upload/restore is not claimed as verified.
-- Android source: QZRA 1.3 creation with hidden metadata and one independent folder-password scope, master/folder password prompts during access, and a persisted secret-free operation history.
-- Operation history: last 100 events are retained; start/completion/failure events are logged; a previous active task is recorded as interrupted after an app process restart. This is not a WorkManager or foreground-service job engine; Android tasks are not guaranteed to survive process death and there are no Android pause/resume/cancel controls.
+- QZRA 1.0–1.3 create/read/browse/verify/extract/restore, including up to 32 independently protected folder scopes; scoped passwords are passed separately during create, restore, verify and archive comparison.
+- Phone and archive search/sort, hidden-file and directory-first settings, background file listing, archive metadata and split/join with SHA-256-verified `.qzset` volumes.
+- WorkManager foreground jobs for archive creation, restore, verification, local snapshot creation/verification/restore, WebDAV push/pull and folder sync. The Operations page observes jobs and reports progress, byte counts, speed, ETA, file counts where provided, errors, results and cloud conflicts. Pause/resume is cooperative at engine progress checkpoints; cancellation stops at the next safe checkpoint.
+- WorkManager persists queued/scheduled work across Activity closure and device reboot. If the app process is killed during a running task, WorkManager can rerun the transaction from the beginning; exact byte-offset continuation within archive/cloud streams is not implemented. This must not be described as resumable-at-byte-offset.
+- Scheduled local backups: daily, every 3 days, or weekly; manual backup; retention; snapshot list, verify and restore. Android snapshots are full standalone QZRA archives. Python repository snapshots support immutable manifests and content-addressed block reuse/deduplication; that chunk-level incremental storage is not yet the Android snapshot implementation.
+- Password vault and WebDAV credentials use AES-GCM encrypted blobs with an AES key held in Android Keystore. WorkManager input data holds references, not cleartext passwords. Android key loss/reinstall may make local secrets unrecoverable; users must keep recovery credentials safely outside the app.
+- Ed25519 archive signing and verification with exported detached signature/public-key companions. Users must validate/pin the public-key fingerprint through an independent trusted channel; a public key shipped beside its signature alone does not authenticate identity.
+- Android HTTPS WebDAV account management, connection test, verified archive upload, remote listing, verified download and manual two-way sync of top-level `.qzra` files. Conflicts are reported; sync does not overwrite or delete either side.
+- USB/SD access via Android Storage Access Framework, including browsing and archive export with post-copy SHA-256 validation. Full shared-storage browsing is subject to Android storage permissions and distribution policy.
+- Safe restore staging/rollback, explicit archive-delete failure after successful restore, stale cache cleanup, and stale `.qamzor-restore-*` workspace cleanup after seven days.
 
-## Test evidence
+## Features that remain platform-limited or incomplete
 
-- `PYTHONPATH=src python -m pytest -q` — **90 passed, 9 subtests passed**.
-- `python -m py_compile src/qamzor/cloud_providers.py src/qamzor/cli.py src/qamzor/__init__.py tests/test_cloud_providers.py` — passed.
-- `python -m compileall -q src tests tools` — see current execution report.
-- `PYTHONPATH=src python -m qamzor.cli --help` — passed; includes `cloud-provider push/pull`.
-- Package version: `0.7.2.dev0`; Python distribution/wheel is rebuilt for this snapshot.
+- Native Android OAuth account UI/refresh-token flows for Google Drive, Dropbox, OneDrive and S3 are not implemented. Those provider adapters remain in Python. Android account integration is WebDAV HTTPS only.
+- Android snapshots are full archives, not chunk-incremental/deduplicated snapshots. The Python Repository supports deduplicated snapshot reuse and delta export/apply.
+- Exact byte-offset resume after process death is not implemented. WorkManager replays a task from the beginning; in-flight transfer progress is not continued at the last byte.
+- Compare and some interactive preview/selection flows remain Activity/executor based rather than all being WorkManager jobs. Long core create/restore/verify/backup/cloud paths are WorkManager-backed.
+- Android only exposes QZRA in this app. ZIP, 7z, TAR, GZIP, BZIP2, XZ and RAR are not fully integrated as Android open/create targets in this delivery. Python/desktop support is a separate platform capability. RAR writing requires a licensed compatible engine.
+- Android UI does not yet expose XOR archive repair, and USB/SD browsing is constrained by the selected SAF document-tree provider.
+- WorkManager, Keystore, WebDAV server compatibility, background execution restrictions, scoped storage, large-file memory/disk behavior and key recovery need device/vendor testing.
 
-## Kotlin, Android and desktop acceptance gate
+## Python validation evidence
 
-- Kotlin Core source reads/writes QZRA 1.3, including encrypted manifest envelope, HMAC-separated keys, independent folder scopes and scope-bound AES-GCM chunks. Python-produced fixture tests and Kotlin-writer tests are authored.
-- Android source exposes QZRA 1.3 and folder-unlock prompts. Android app version is `0.7.2-dev` / versionCode 8.
-- `:core:test`, `:sdk:test`, desktop distributions and `:androidApp:assembleDebug :androidApp:testDebugUnitTest` are configured in `.github/workflows/platform-builds.yml`.
-- **Not yet verified:** Kotlin compilation, JUnit execution, Android APK generation, desktop OS packaging and device testing. GitHub Actions must run after push/PR; no APK build is claimed locally.
+- `PYTHONPATH=src pytest -q` — **90 passed, 9 subtests passed**.
+- `python -m compileall -q src tests tools` — passed.
+- No live OAuth/cloud provider credentials were supplied, so remote Google/Dropbox/OneDrive/S3 account operations were not tested against real services.
 
-## Remaining boundaries
+## Android/Kotlin validation limits
 
-- Cloud adapters are Python Core/CLI only; no Android OAuth consent/login UI, Android cloud sync or multi-destination scheduler is implemented.
-- OAuth adapters accept an already-issued access token; refresh-token lifecycle/interactive consent is not implemented. Tokens and S3 keys must be supplied at runtime and kept in GitHub Secrets or another secret manager.
-- S3 multipart uploads use 128 MiB parts with the current 1 TiB QAMZOR safety ceiling. S3 restore/push is not certified against external compatible vendors in this workspace.
-- SHA-256 sidecars detect accidental corruption but are not authenticated against a hostile cloud service that can replace both archive and sidecar; use detached Ed25519 signatures with a separately trusted public key for authenticity.
-- Kotlin QZRA 1.3 and crypto implementation have not received independent security audit or formal interoperability certification.
-- Android operation history does not make Activity-thread operations durable across process termination.
-- Smart Exclusions, Split/Join, Office preview and cloud-provider UI remain Python Core/CLI features rather than Android controls.
+- `gradle` and Android SDK are not installed in this workspace; no Gradle wrapper is present. Therefore `:core:test`, `:sdk:test`, `:desktopApp:installDist`, `:androidApp:assembleDebug` and `:androidApp:testDebugUnitTest` were not run.
+- Kotlin source and JUnit tests have been edited, but no Android compile/APK/JUnit success is claimed. The previous no-classpath `kotlinc` diagnostic is not a valid Android build.
+- CI workflows are configured in `.github/workflows/platform-builds.yml`; run them on GitHub before treating the package as install-ready. Follow with physical-device tests for lifecycle/reboot, storage access, USB/SD, WebDAV servers, background restrictions, battery saver, and large files.
 
-## GitHub Actions commands
+## Security status
 
-The workflow provisions JDK 17, Gradle 8.9 and Android SDK API 35 on hosted runners, so no local Android SDK or Gradle installation is required for the intended build path. After publishing the source repository, inspect the `Platform builds` workflow artifacts for:
-
-```text
-qamzor-android-debug-apk
-qamzor-kotlin-test-reports-<os>
-qamzor-desktop-<os>
-```
-
-A passing workflow is necessary but does not replace physical-device and security testing.
+QZRA and associated cryptographic code are development software and have not received independent security audit or formal format certification. SHA-256 sidecars detect corruption, but authenticity requires Ed25519 verification against a separately trusted fingerprint. Do not make this the only copy of important files before independent review and device acceptance.

@@ -1,16 +1,35 @@
 # Changelog
 
-## 0.9.0-dev — In-place archive/encrypt and phone file browser (2026-11-04)
+## 0.9.0 — File search/sort, archive metadata and verified split sets (2026-11-04)
 
 - Android: the first tab is now a file browser for the whole phone (internal storage and SD card) like RAR. Long-press to select; tap a file to select it; tap a folder to enter it.
 - Android: **Archive** and **Encrypt** act on the original item. A `.qzra` file is created next to it, fully verified (every chunk and SHA-256), checked against a before/after snapshot of the source, and only then is the original deleted. If anything fails the original is left untouched and the partial archive is removed.
-- Android: **Encrypt** asks for one password (min. 10 characters, confirmed) and writes QZRA 1.3: AES-256-GCM, scrypt, file names/sizes/structure hidden. Opening it from the app or from any file manager asks for that password first.
+- Android: **Encrypt** asks for a master password (min. 10 characters, confirmed), then optionally asks for independent passwords for up to 32 selected folder scopes. It writes QZRA 1.3 with AES-256-GCM, scrypt and encrypted metadata. Opening prompts for the master password; entering a protected folder prompts for its independent password.
 - Android: `.qzra` rows show the QAMZOR icon (and a lock when password-protected). Tapping one offers open/browse, restore original, and integrity check. Restore extracts into a hidden work folder, verifies, then moves into place.
-- Android: removed the copy-to-private-staging flow (the "copies contents into an internal staging area and does not change the original folder" behaviour) and the separate master/folder password prompts on creation. Opening an archive that lives in user storage no longer copies it, and closing it never deletes the real file.
+- Android: the in-place vault path works on the selected original file/folder and writes a verified `.qzra` beside it; source deletion is configurable. Direct path opens do not copy the archive, while SAF-provided archive streams may be copied to private cache for random access. Closing an archive never deletes the user's original archive.
 - Android: needs "All files access" (MANAGE_EXTERNAL_STORAGE) on Android 11+, runtime storage permission on Android 8–10. Sideloaded builds only.
+- Android: added live search by file/folder name and extension in the current phone directory, plus persistent sorting by modified date (newest/oldest), name (ascending/descending), size and file type. Directories remain grouped first.
+- Android: added search and relevant sort modes to each opened archive directory. Archive timestamps are intentionally not offered because QZRA entries do not store per-file modification dates.
+- Android: opened archive details now display the actual QZRA format version, encryption/metadata privacy state, file and folder counts, and uncompressed size after manifest authentication.
+- Kotlin Core: added integrity-checked split/join for large QZRA archives. It writes Python-compatible version-2 `.qzset` descriptors, SHA-256 hashes for every part and the complete archive, and publishes a reassembled archive only after all checks pass.
+- Android: added file-browser actions to split a `.qzra` archive into configurable parts and reassemble a `.qzset` file. Original archive/part files are retained.
+- Unified package, Android, Desktop, SDK and app version metadata at `0.9.0` (Android versionCode remains monotonic at 10).
+- Added Kotlin split-set round-trip, corruption and overwrite-protection tests. Gradle/JUnit/APK execution still requires a Gradle + Android SDK environment.
 - Android: «استخراج» inside an opened archive that lives in storage no longer opens a folder picker: the whole archive is restored next to itself (with the option to delete the archive), and a single item is extracted beside the archive.
 - Core: new `InPlaceVault` (`seal`, `restore`, `restoreItem`, `isEncrypted`) with JUnit tests in `InPlaceVaultTest`.
 - Not built or run in this workspace: Kotlin/Gradle compile, JUnit and APK must be verified by GitHub Actions.
+
+### 0.9.0 maintenance completion — Android safety, Settings and scoped password validation
+
+- Added a dedicated Android Settings page for hidden files, directory-first sorting, keeping/deleting the source after verified archiving, destructive-action confirmations, private temp cleanup of entries untouched for at least 24 hours, and operation-history retention.
+- Connected the settings to actual browser, archive and maintenance behavior; added protection against cleaning the active archive session or starting cleanup during a running operation.
+- Repaired Android folder-password snapshots and changed independent-password validation to use the authenticated AES-GCM folder key-check record in QZRA 1.3. Listing validates the supplied scope key-check; verify/preview/extract additionally read payload bytes and check SHA-256.
+- Completed independent folder-password collection for Android creation, restore, single-item extraction, verification and archive comparison; Desktop now collects separate folder passwords for create, inspect/verify, compare and extract.
+- Added rollback of partially moved restore outputs if a later move fails. If archive deletion fails after successful restoration, keep both restored data and the archive and report the deletion failure.
+- Moved large phone-file listing/sorting to a dedicated executor; Desktop file tasks use SwingWorker and keep Swing UI work on the EDT.
+- Corrected the protected-folder selection label, the file-selection safety summary and the cleanup status message; fixed encryption detection to require a valid QZRA signature.
+- Updated Android documentation and the cloud adapter User-Agent to application version 0.9.0.
+- Validation boundary: Python regression tests can run locally; Android Gradle/JUnit/APK and real-device validation still require a configured Android SDK/Gradle runner. Android operations are not durable WorkManager jobs.
 
 ## 0.8.0-dev — Android UI rework and folder-password UX (2026-11-04)
 
@@ -197,3 +216,16 @@
 - Added WebDAV HTTPS backup transport with SHA-256 sidecars and verified atomic downloads.
 - Added a persistent Python JobCenter API with progress, checkpoint pause/resume/cancel, and secret redaction.
 - Added product feature documentation in English and Arabic; Kotlin/Android/Desktop UI integration remains open.
+
+## 0.9.0 maintenance — Android operations, snapshots, secrets and WebDAV
+
+- Added a WorkManager foreground job center for QZRA seal/restore/verify, local snapshot backup/verify/restore and HTTPS WebDAV push/pull/sync. Operations publish phase, byte progress, speed, estimated remaining time and file counters where available; cooperative pause/resume/cancel controls stop at safe engine checkpoints.
+- WorkManager persists scheduled work over Activity closure/reboot. After process death, running tasks are retried from the start of the transaction; exact byte-offset resume is not implemented.
+- Added manual and periodic local QZRA snapshots (daily / every 3 days / weekly), retention, history, integrity verification and restore. Android snapshots are full archives; Python repository storage retains content-addressed deduplication.
+- Added Android-Keystore-backed AES-GCM storage for archive passwords, protected-folder passwords, WebDAV credentials and signing private-key material. Cleartext secrets are not put into WorkManager input data or operation history.
+- Added HTTPS WebDAV account testing, verified upload/download and safe two-way root-level QZRA sync. Conflicts are reported without overwriting or deleting either copy. Native Android OAuth flows for Drive/Dropbox/OneDrive/S3 remain out of scope.
+- Added Android Ed25519 archive signing/verification and export of `.qzsig` plus public-key companions. Public-key fingerprints must be trusted out of band.
+- Added USB/SD Storage Access Framework linking, QZRA browsing/export and post-copy SHA-256 verification.
+- Added cleanup of abandoned `.qamzor-restore-*` workspaces older than seven days, while preserving recent workspaces that may belong to an active restore.
+- Updated Android guide, README, status and implementation report to describe current platform support and remaining limitations accurately.
+- Python validation: 90 tests and 9 subtests passed. Gradle/JUnit/APK/device tests were not run in this environment due missing Gradle/Android SDK.

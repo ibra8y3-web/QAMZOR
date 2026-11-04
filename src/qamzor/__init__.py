@@ -20,7 +20,7 @@ from .cloud import WebDavBackup
 from .cloud_providers import GoogleDriveBackup, DropboxBackup, OneDriveBackup, S3Backup
 from .jobs import JobCenter, JobControl, JobCancelledError
 
-__version__ = "0.7.2-dev"
+__version__ = "0.9.0"
 
 __all__ = [
     "ArchiveChunk", "ArchiveEntry", "FormatError", "IntegrityError", "QamzorError",

@@ -81,6 +81,54 @@ class InPlaceVaultTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun protectedFolderSealAndRestoreRequireIndependentPassword() {
+        val root = Files.createTempDirectory("qamzor-vault-scopes").toFile()
+        try {
+            val folder = File(root, "project").apply { mkdirs() }
+            File(folder, "public.txt").writeText("public data")
+            File(folder, "private").mkdirs()
+            val expected = "secret project data".repeat(2500).toByteArray()
+            File(folder, "private/secret.txt").writeBytes(expected)
+
+            val sealed = InPlaceVault.seal(
+                folder,
+                password = password,
+                folderPasswords = mapOf("project/private" to "independent-secret")
+            )
+            assertTrue(sealed.archive.isFile)
+            assertEquals("1.3", ArchiveEngine.inspect(sealed.archive, password).version)
+            assertEquals(listOf("project/private"), ArchiveEngine.protectedFolders(sealed.archive, password))
+            assertFailsWith<IllegalStateException> { InPlaceVault.restore(sealed.archive, password, removeArchive = false) }
+            assertFailsWith<Exception> {
+                InPlaceVault.restore(
+                    sealed.archive, password, removeArchive = false,
+                    folderPasswords = mapOf("project/private" to "wrong-independent-password")
+                )
+            }
+            assertTrue(sealed.archive.isFile, "a wrong scoped password must not alter or delete the archive")
+
+            val restored = InPlaceVault.restore(
+                sealed.archive, password, removeArchive = false,
+                folderPasswords = mapOf("project/private" to "independent-secret")
+            )
+            assertTrue(sealed.archive.isFile)
+            assertContentEquals(expected, File(restored.single(), "private/secret.txt").readBytes())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun protectedFolderPasswordsCannotBeUsedWithoutMasterPassword() {
+        val root = Files.createTempDirectory("qamzor-vault-scopes-invalid").toFile()
+        try {
+            val folder = File(root, "project/private").apply { mkdirs() }
+            File(folder, "secret.txt").writeText("secret")
+            assertFailsWith<IllegalArgumentException> {
+                InPlaceVault.seal(File(root, "project"), null, deleteOriginal = false,
+                    folderPasswords = mapOf("project/private" to "independent-secret"))
+            }
+            assertTrue(File(folder, "secret.txt").isFile)
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun restoreWithWrongPasswordChangesNothing() {
         val root = Files.createTempDirectory("qamzor-vault-wrong").toFile()
         try {
@@ -90,4 +138,15 @@ class InPlaceVaultTest {
             assertEquals(listOf("ابراهيم.qzra"), root.list()!!.toList().filterNot { it.startsWith(".") })
         } finally { root.deleteRecursively() }
     }
+    @Test fun encryptionDetectionChecksTheQzraSignature() {
+        val root = Files.createTempDirectory("qamzor-vault-signature").toFile()
+        try {
+            val fake = File(root, "not-an-archive.bin")
+            fake.writeBytes(ByteArray(32).also {
+                it[8] = 0; it[9] = 1; it[10] = 0; it[11] = 3
+            })
+            assertFalse(InPlaceVault.isEncrypted(fake), "random files must not be misidentified as encrypted QZRA archives")
+        } finally { root.deleteRecursively() }
+    }
+
 }

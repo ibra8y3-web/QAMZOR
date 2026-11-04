@@ -124,7 +124,7 @@ class _Http:
             parsed.hostname, parsed.port or 443, timeout=self.timeout,
             context=ssl.create_default_context(),
         )
-        request_headers = {"Host": parsed.netloc, "Connection": "close", "User-Agent": "QAMZOR-Cloud/0.7.2"}
+        request_headers = {"Host": parsed.netloc, "Connection": "close", "User-Agent": "QAMZOR-Cloud/0.9.0"}
         if headers:
             request_headers.update(headers)
         if source is not None:
