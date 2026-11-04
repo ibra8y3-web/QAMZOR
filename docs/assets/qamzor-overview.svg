@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="560" viewBox="0 0 1440 560" role="img" aria-labelledby="title desc">
+  <title id="title">QAMZOR — archive, protect, verify, restore</title>
+  <desc id="desc">A dark technology-themed architecture diagram showing files entering the QAMZOR engine, becoming a QZRA archive, and moving through integrity, encryption, backup, and restore workflows.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#081426"/>
+      <stop offset="1" stop-color="#101b35"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#48d6c5"/>
+      <stop offset="1" stop-color="#5a91ff"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#172947"/>
+      <stop offset="1" stop-color="#101f39"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#6fcfc8"/>
+    </marker>
+  </defs>
+  <rect width="1440" height="560" rx="28" fill="url(#bg)"/>
+  <g opacity=".16" stroke="#6b8bb8" stroke-width="1">
+    <path d="M0 110H1440M0 220H1440M0 330H1440M0 440H1440"/>
+    <path d="M120 0V560M240 0V560M360 0V560M480 0V560M600 0V560M720 0V560M840 0V560M960 0V560M1080 0V560M1200 0V560M1320 0V560"/>
+  </g>
+  <circle cx="1180" cy="105" r="150" fill="#3378db" opacity=".10" filter="url(#glow)"/>
+  <circle cx="240" cy="490" r="190" fill="#32c7b2" opacity=".07" filter="url(#glow)"/>
+
+  <g font-family="Inter,Segoe UI,Arial,sans-serif">
+    <text x="76" y="88" fill="#7ce3d6" font-size="20" font-weight="700" letter-spacing="5">OPEN-SOURCE ARCHIVE TOOLING</text>
+    <text x="72" y="174" fill="#f5f8ff" font-size="76" font-weight="800" letter-spacing="-2">QAMZOR</text>
+    <text x="78" y="218" fill="#b8c8df" font-size="25">A native archive format and data-management toolkit.</text>
+    <text x="78" y="264" fill="#829bbd" font-size="18">PACKAGE  ·  PROTECT  ·  VERIFY  ·  RESTORE</text>
+
+    <!-- Input card -->
+    <rect x="78" y="326" width="250" height="176" rx="20" fill="url(#panel)" stroke="#385276" stroke-width="1.5"/>
+    <g transform="translate(108 340)" fill="none" stroke="#8fb5dd" stroke-width="3" stroke-linejoin="round">
+      <path d="M0 16h34l12 12h62v65H0z"/>
+      <path d="M0 28h108"/>
+      <path d="M19 51h24M19 67h49" opacity=".7"/>
+    </g>
+    <text x="108" y="458" fill="#eff5ff" font-size="21" font-weight="700">Your files</text>
+    <text x="108" y="484" fill="#91a8c8" font-size="15">Files · folders · projects</text>
+
+    <path d="M342 400H414" fill="none" stroke="#6fcfc8" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <!-- Engine card -->
+    <rect x="430" y="326" width="275" height="176" rx="20" fill="url(#panel)" stroke="#398d91" stroke-width="1.8"/>
+    <g transform="translate(462 353)" fill="none" stroke="#64dfd0" stroke-width="3" stroke-linecap="round">
+      <rect x="0" y="0" width="58" height="58" rx="12"/>
+      <path d="M14 18h30M14 30h30M14 42h19M-8 12h8M-8 29h8M-8 46h8M58 12h8M58 29h8M58 46h8"/>
+    </g>
+    <text x="540" y="386" fill="#f2f7ff" font-size="22" font-weight="700">QAMZOR Core</text>
+    <text x="462" y="440" fill="#aac0db" font-size="16">Chunk · compress · deduplicate</text>
+    <text x="462" y="464" fill="#aac0db" font-size="16">Encrypt · index · validate</text>
+
+    <path d="M720 400H790" fill="none" stroke="#6fcfc8" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <!-- Archive card -->
+    <rect x="806" y="312" width="260" height="210" rx="22" fill="#102c45" stroke="#54c9bd" stroke-width="2"/>
+    <g transform="translate(887 340)">
+      <path d="M10 0h74l20 20v86H10z" fill="#183e5d" stroke="#7be2d4" stroke-width="2.5"/>
+      <path d="M84 0v22h20" fill="none" stroke="#7be2d4" stroke-width="2.5"/>
+      <path d="M26 42h60M26 58h60M26 74h42" stroke="#7be2d4" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+      <path d="M48 91h28" stroke="#4e9de8" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <text x="936" y="472" fill="#f4fffd" font-size="25" font-weight="800" text-anchor="middle">.qzra</text>
+    <text x="936" y="512" fill="#85cfc6" font-size="15" text-anchor="middle">Native QZRA container</text>
+
+    <path d="M1082 400H1140" fill="none" stroke="#6fcfc8" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <!-- Operations card -->
+    <rect x="1154" y="326" width="210" height="176" rx="20" fill="url(#panel)" stroke="#385276" stroke-width="1.5"/>
+    <g transform="translate(1184 351)" fill="none" stroke="#83b5f4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 17l12 12 25-25"/>
+      <path d="M57 6h37M57 25h37M5 52h89M5 71h89" opacity=".8"/>
+    </g>
+    <text x="1184" y="456" fill="#eff5ff" font-size="20" font-weight="700">Workflows</text>
+    <text x="1184" y="482" fill="#91a8c8" font-size="15">Verify · backup · restore</text>
+
+    <text x="78" y="535" fill="#6f88ab" font-size="14">PRE-ALPHA DEVELOPMENT  ·  PYTHON REFERENCE ENGINE  ·  ANDROID / KOTLIN SOURCE</text>
+  </g>
+</svg>
