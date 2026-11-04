@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
 class ArchiveVolumesTest {
     @Test
     fun splitsAndReassemblesQzraWithPythonCompatibleDescriptorAndChecksums() {
-        val root = Files.createTempDirectory("qamzor-volumes-test").toFile()
+        val root = Files.createTempDirectory("qamzor-volumes-test").toFile().canonicalFile
         try {
             val source = File(root, "source.bin")
             val randomish = ByteArray(2_400_000).also { Random(420).nextBytes(it) }
@@ -43,7 +43,7 @@ class ArchiveVolumesTest {
 
     @Test
     fun rejectsCorruptedPartAndDoesNotPublishPartialArchive() {
-        val root = Files.createTempDirectory("qamzor-volumes-corrupt-test").toFile()
+        val root = Files.createTempDirectory("qamzor-volumes-corrupt-test").toFile().canonicalFile
         try {
             val source = File(root, "payload.bin").apply {
                 writeBytes(ByteArray(1_800_000).also { Random(421).nextBytes(it) })
@@ -67,7 +67,7 @@ class ArchiveVolumesTest {
 
     @Test
     fun refusesToReplaceAnExistingSplitDescriptorOrOutputByDefault() {
-        val root = Files.createTempDirectory("qamzor-volumes-overwrite-test").toFile()
+        val root = Files.createTempDirectory("qamzor-volumes-overwrite-test").toFile().canonicalFile
         try {
             val source = File(root, "notes.txt").apply { writeText("QAMZOR") }
             val archive = File(root, "notes.qzra")
@@ -83,7 +83,7 @@ class ArchiveVolumesTest {
     }
     @Test
     fun reportsAuthenticatedArchiveFormatMetadataForProtectedV13() {
-        val root = Files.createTempDirectory("qamzor-inspect-test").toFile()
+        val root = Files.createTempDirectory("qamzor-inspect-test").toFile().canonicalFile
         try {
             val source = File(root, "private.txt").apply { writeText("private metadata") }
             val archive = File(root, "private.qzra")

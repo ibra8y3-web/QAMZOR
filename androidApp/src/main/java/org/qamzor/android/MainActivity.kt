@@ -48,6 +48,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.lifecycle.Observer
+import org.json.JSONObject
 import org.qamzor.core.ArchiveEngine
 import org.qamzor.core.ArchiveVolumes
 import org.qamzor.core.InPlaceVault
@@ -133,25 +134,18 @@ class MainActivity : Activity() {
         }, "QAMZOR-StaleCacheCleanup").start()
     }
 
-    /** Do not remove cache-backed SAF copies while a durable worker still needs them. */
+    /**
+     * WorkInfo intentionally exposes progress/output, not the original input Data.
+     * Avoid deleting any QAMZOR temporary files while a tagged worker is active;
+     * this conservative check also covers descriptor-backed and periodic jobs.
+     */
     private fun hasActiveBackgroundUseOfCache(): Boolean {
-        val cacheRoot = cacheDir.canonicalPath + File.separator
         val infos = WorkManager.getInstance(this).getWorkInfosByTag(QamzorBackgroundWork.TAG_ALL)
             .get(5, java.util.concurrent.TimeUnit.SECONDS)
         return infos.any { info ->
-            if (info.state !in setOf(WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED)) return@any false
-            val paths = ArrayList<String>()
-            listOf("archive", "source", "destination", "store").forEach { key ->
-                info.inputData.getString(key)?.let(paths::add)
-            }
-            info.inputData.getString("descriptor_path")?.let { descriptorPath ->
-                runCatching {
-                    val json = JSONObject(File(descriptorPath).readText(Charsets.UTF_8))
-                    listOf("archive", "source", "destination", "store").forEach { key -> json.optString(key).takeIf { it.isNotBlank() }?.let(paths::add) }
-                    json.optJSONArray("sources")?.let { array -> for (index in 0 until array.length()) paths.add(array.getString(index)) }
-                }
-            }
-            paths.any { raw -> runCatching { File(raw).canonicalPath.startsWith(cacheRoot) }.getOrDefault(false) }
+            info.state == WorkInfo.State.RUNNING ||
+                info.state == WorkInfo.State.ENQUEUED ||
+                info.state == WorkInfo.State.BLOCKED
         }
     }
 
