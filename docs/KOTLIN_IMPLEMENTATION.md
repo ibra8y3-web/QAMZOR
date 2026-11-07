@@ -10,17 +10,11 @@ The Core APIs accept folder passwords on `list`, `browse`, `preview`, `verify`, 
 
 **Validation boundary:** Kotlin source and JUnit tests are authored but have not been compiled or run in this workspace. The fixture tests must pass in GitHub Actions before cross-language interoperability is certified. QZRA 1.3 is still a development format and has not received an independent cryptographic audit.
 
-## QZRA split sets
-
-`ArchiveVolumes.split` and `ArchiveVolumes.join` implement the version-2 `QZRA-PART-SET` descriptor also used by the Python `qamzor.volumes` module. Each immutable part carries a SHA-256 digest; the descriptor carries each part size/digest and the complete archive length/digest. Reassembly validates descriptor bounds, part names/order, size and digest, then verifies the joined QZRA signature and publishes the output only after validation. Android exposes these operations from the phone file browser; opening a `.qzset` offers a verified reassembly flow. Original archives and part files are retained. The split-set checksum detects corruption but is not an authenticity signature against an attacker who can replace both parts and descriptor.
-
 ## Android integration
 
-The Android UI exposes QZRA 1.3 metadata hiding and up to 32 independent protected-folder scopes. It connects scoped passwords to create, restore, verify and compare flows. A password vault and WebDAV account passwords are encrypted with AES-GCM using Android Keystore. The signing-key manager stores Ed25519 private material in the encrypted secret store and exports detached signatures/public-key companions for verification.
+The Android UI exposes QZRA 1.3 metadata hiding and one independent protected-folder scope during archive creation. It prompts for the archive master password at open, then requests the matching folder password when the user attempts to preview, verify or extract a protected folder. The UI does not persist any archive/folder password. The operation center persists the last 100 secret-free events, shows the current operation and elapsed time while the Activity is alive, counts successes/failures/interrupted operations, and marks a prior process's active operation as interrupted after an app-process restart.
 
-WorkManager foreground jobs now back archive seal/restore/verify, local snapshot creation/verification/restore and WebDAV push/pull/sync. The Operations page observes live job state, phase, progress, byte counts, measured speed, ETA and file counters when available. Pause/resume is cooperative at safe engine progress checkpoints; cancel stops at a safe checkpoint. WorkManager persists queued/scheduled work over Activity closure and device reboot. If the app process is killed during an in-flight task, it can be replayed from the transaction start; exact byte-offset continuation is not implemented.
-
-Local Android snapshots are full QZRA archives with scheduled retention/history. Content-addressed block reuse and deduplicated snapshot storage remain features of the Python Repository, not the Android snapshot store. Android cloud account support is HTTPS WebDAV only; Drive/Dropbox/OneDrive/S3 OAuth flows are Python-only. USB/SD linking uses Storage Access Framework and post-copy SHA-256 verification.
+This operation center is **not** a WorkManager/foreground-service job engine: active work is not guaranteed to survive process death, and pause/resume/cancel controls are not implemented in the Android UI. The persistent history makes interruption visible; it does not resume file operations.
 
 ## Desktop scope
 

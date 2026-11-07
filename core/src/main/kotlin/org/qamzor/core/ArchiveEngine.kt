@@ -85,11 +85,6 @@ object ArchiveEngine {
     data class CreateResult(val archive: File, val entries: Int, val files: Int, val originalBytes: Long, val storedBytes: Long)
     data class VerifyResult(val valid: Boolean, val filesChecked: Int, val bytesChecked: Long, val version: String)
     data class BrowseItem(val path: String, val name: String, val type: String, val size: Long)
-    data class ArchiveInfo(
-        val version: String, val entries: Int, val files: Int, val directories: Int,
-        val uncompressedBytes: Long, val encrypted: Boolean, val encryptedMetadata: Boolean,
-        val protectedFolders: Int
-    )
     data class PreviewResult(val path: String, val data: ByteArray, val bytesTotal: Long, val truncated: Boolean, val verified: Boolean)
     data class CompareResult(
         val leftVersion: String, val rightVersion: String,
@@ -97,18 +92,6 @@ object ArchiveEngine {
         val changed: List<String>, val unchanged: List<String>,
         val contentVerified: Boolean
     )
-    data class OperationProgress(
-        val phase: String, val completedBytes: Long, val totalBytes: Long,
-        val completedFiles: Int, val totalFiles: Int
-    )
-    private fun progress(
-        callback: ((OperationProgress) -> Unit)?, cancelled: (() -> Boolean)?,
-        phase: String, completedBytes: Long, totalBytes: Long,
-        completedFiles: Int, totalFiles: Int
-    ) {
-        if (cancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled")
-        callback?.invoke(OperationProgress(phase, completedBytes.coerceAtMost(totalBytes), totalBytes, completedFiles, totalFiles))
-    }
 
     @JvmStatic
     @JvmOverloads
@@ -118,9 +101,7 @@ object ArchiveEngine {
         overwrite: Boolean = false,
         password: String? = null,
         encryptMetadata: Boolean = false,
-        folderPasswords: Map<String, String> = emptyMap(),
-        onProgress: ((OperationProgress) -> Unit)? = null,
-        isCancelled: (() -> Boolean)? = null
+        folderPasswords: Map<String, String> = emptyMap()
     ): CreateResult {
         require(sources.isNotEmpty()) { "Select at least one source file or folder" }
         require(password == null || password.isNotEmpty()) { "Encryption password must not be empty" }
@@ -169,10 +150,6 @@ object ArchiveEngine {
             }
         }
         val spool = File.createTempFile("qamzor-payload-", ".tmp", archive.absoluteFile.parentFile)
-        val totalWorkBytes = items.filterNot { it.directory }.sumOf { it.file.length().coerceAtLeast(0L) }
-        var completedWorkBytes = 0L
-        var completedWorkFiles = 0
-        progress(onProgress, isCancelled, "preparing", 0L, totalWorkBytes, 0, items.count { !it.directory })
         val index = LinkedHashMap<String, Chunk>()
         val entries = ArrayList<Entry>(items.size)
         var payloadLength = 0L
@@ -192,11 +169,8 @@ object ArchiveEngine {
                     val chunkKey = if (scopeId != null) scopeKeys.getValue(scopeId) else rootChunkKey
                     FileInputStream(source).use { input ->
                         forEachChunk(input) { raw ->
-                            progress(onProgress, isCancelled, "creating", completedWorkBytes, totalWorkBytes, completedWorkFiles, items.count { !it.directory })
                             fileDigest.update(raw)
                             fileSize += raw.size
-                            completedWorkBytes += raw.size
-                            progress(onProgress, isCancelled, "creating", completedWorkBytes, totalWorkBytes, completedWorkFiles, items.count { !it.directory })
                             val digest = sha256(raw)
                             val key = "${scopeId ?: "-"}:$digest:${raw.size}"
                             val existing = index[key]
@@ -223,8 +197,6 @@ object ArchiveEngine {
                     }
                     entries += Entry(name, "file", fileSize, fileDigest.digest().toHex(), refs)
                     originalBytes += fileSize
-                    completedWorkFiles++
-                    progress(onProgress, isCancelled, "creating", completedWorkBytes, totalWorkBytes, completedWorkFiles, items.count { !it.directory })
                 }
             }
 
@@ -282,7 +254,6 @@ object ArchiveEngine {
                     Files.move(temporary.toPath(), archive.toPath())
                 }
             } finally { temporary.delete() }
-            progress(onProgress, isCancelled, "publishing", totalWorkBytes, totalWorkBytes, completedWorkFiles, items.count { !it.directory })
             return CreateResult(archive, entries.size, entries.count { it.type == "file" }, originalBytes, payloadLength)
         } finally {
             encryptionKey?.fill(0)
@@ -306,38 +277,17 @@ object ArchiveEngine {
         overwrite: Boolean = false,
         password: String? = null,
         encryptMetadata: Boolean = false,
-        folderPasswords: Map<String, String> = emptyMap(),
-        onProgress: ((OperationProgress) -> Unit)? = null,
-        isCancelled: (() -> Boolean)? = null
+        folderPasswords: Map<String, String> = emptyMap()
     ): CreateResult {
         require(destination.extension.equals("qzra", ignoreCase = true)) {
             "QZRA conversion destination must use the .qzra extension"
         }
-        return create(destination, inputs, overwrite, password, encryptMetadata, folderPasswords, onProgress, isCancelled)
+        return create(destination, inputs, overwrite, password, encryptMetadata, folderPasswords)
     }
 
     @JvmStatic
     @JvmOverloads
     fun list(archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<EntryInfo> = readManifest(archive, password, folderPasswords).second.entries.map { EntryInfo(it.path, it.type, it.size) }
-
-    /** Read authenticated format and manifest metadata without decoding archive payloads. */
-    @JvmStatic
-    @JvmOverloads
-    fun inspect(archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): ArchiveInfo {
-        val (version, manifest, _, _) = readManifest(archive, password, folderPasswords)
-        val files = manifest.entries.filter { it.type == "file" }
-        val directories = manifest.entries.count { it.type == "directory" }
-        return ArchiveInfo(
-            version = version,
-            entries = manifest.entries.size,
-            files = files.size,
-            directories = directories,
-            uncompressedBytes = files.sumOf { it.size },
-            encrypted = version == "1.2" || version == "1.3",
-            encryptedMetadata = version == "1.3",
-            protectedFolders = manifest.security?.scopes?.size ?: 0
-        )
-    }
 
     /**
      * Archive-relative paths of folders that have their own independent password (QZRA 1.3).
@@ -417,9 +367,7 @@ object ArchiveEngine {
         maxTotalBytes: Long = 4L * 1024 * 1024 * 1024,
         maxFiles: Int = 100_000,
         password: String? = null,
-        folderPasswords: Map<String, String> = emptyMap(),
-        onProgress: ((OperationProgress) -> Unit)? = null,
-        isCancelled: (() -> Boolean)? = null
+        folderPasswords: Map<String, String> = emptyMap()
     ): List<File> {
         require(selectedPaths.isNotEmpty()) { "Select at least one archive item" }
         require(maxTotalBytes >= 0 && maxFiles >= 0) { "Extraction limits must be non-negative" }
@@ -447,13 +395,8 @@ object ArchiveEngine {
         require(destination.mkdirs() || destination.isDirectory) { "Cannot create extraction destination" }
         val root = destination.canonicalFile
         val outputs = ArrayList<File>()
-        var completedBytes = 0L
-        var completedFiles = 0
-        val totalFiles = files.size
-        progress(onProgress, isCancelled, "extracting", 0L, totalBytes, 0, totalFiles)
         RandomAccessFile(archive, "r").use { input ->
             for (entry in ordered) {
-                if (isCancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled")
                 validatePath(entry.path)
                 val target = File(root, entry.path)
                 require(target.canonicalFile.toPath().startsWith(root.toPath())) { "Unsafe extraction path: ${entry.path}" }
@@ -468,13 +411,7 @@ object ArchiveEngine {
                 if (target.exists()) require(overwrite && target.isFile) { "Refusing to overwrite existing item: ${entry.path}" }
                 val temp = File.createTempFile(".qamzor-", ".part", target.parentFile)
                 try {
-                    FileOutputStream(temp).use { output ->
-                        decodeEntry(entry, input, payloadStart, fileLength, output, null, 0, context.fifth,
-                            onBytesDecoded = { delta ->
-                                completedBytes += delta
-                                progress(onProgress, isCancelled, "extracting", completedBytes, totalBytes, completedFiles, totalFiles)
-                            }, isCancelled = isCancelled)
-                    }
+                    FileOutputStream(temp).use { output -> decodeEntry(entry, input, payloadStart, fileLength, output, null, 0, context.fifth) }
                     if (overwrite) {
                         try {
                             Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
@@ -485,12 +422,9 @@ object ArchiveEngine {
                         Files.move(temp.toPath(), target.toPath())
                     }
                     outputs += target
-                    completedFiles++
-                    progress(onProgress, isCancelled, "extracting", completedBytes, totalBytes, completedFiles, totalFiles)
                 } finally { temp.delete() }
             }
         }
-        progress(onProgress, isCancelled, "completed", totalBytes, totalBytes, totalFiles, totalFiles)
         return outputs
     }
 
@@ -514,9 +448,7 @@ object ArchiveEngine {
         output: OutputStream?,
         retained: ByteArrayOutputStream?,
         retainLimit: Int,
-        archiveKeys: ArchiveKeys?,
-        onBytesDecoded: ((Long) -> Unit)? = null,
-        isCancelled: (() -> Boolean)? = null
+        archiveKeys: ArchiveKeys?
     ): Long {
         require(entry.type == "file") { "Only file entries can be decoded" }
         if (archiveKeys?.minor == 3) {
@@ -534,7 +466,6 @@ object ArchiveEngine {
                 entry.compression ?: error("Missing legacy compression"), entry.sha256 ?: error("Missing file digest"))
         )
         for (block in blocks) {
-            if (isCancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled")
             require(block.offset >= 0 && block.compressed_size > 0 && block.size > 0) { "Invalid chunk bounds" }
             require(block.compressed_size <= Int.MAX_VALUE && payloadStart + block.offset <= fileLength && block.compressed_size <= fileLength - (payloadStart + block.offset)) { "Chunk extends beyond archive" }
             input.seek(payloadStart + block.offset)
@@ -563,7 +494,6 @@ object ArchiveEngine {
                 if (count > 0) retained.write(raw, 0, count)
             }
             total += raw.size
-            onBytesDecoded?.invoke(raw.size.toLong())
             require(total <= entry.size) { "Expanded file exceeds declared size" }
         }
         require(total == entry.size && wholeDigest.digest().toHex() == entry.sha256) { "File integrity check failed: ${entry.path}" }
@@ -572,29 +502,19 @@ object ArchiveEngine {
 
     @JvmStatic
     @JvmOverloads
-    fun verify(
-        archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap(),
-        onProgress: ((OperationProgress) -> Unit)? = null, isCancelled: (() -> Boolean)? = null
-    ): VerifyResult {
+    fun verify(archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): VerifyResult {
         val context = readManifest(archive, password, folderPasswords)
         val (version, manifest, payloadStart, fileLength) = context
         var files = 0
         var bytes = 0L
-        val fileEntries = manifest.entries.filter { it.type == "file" }
-        val totalBytes = fileEntries.sumOf { it.size }
-        progress(onProgress, isCancelled, "verifying", 0L, totalBytes, 0, fileEntries.size)
         RandomAccessFile(archive, "r").use { input ->
-            for (entry in fileEntries) {
+            for (entry in manifest.entries) {
                 validatePath(entry.path)
-                if (isCancelled?.invoke() == true) throw InterruptedException("QAMZOR operation cancelled")
-                bytes += decodeEntry(entry, input, payloadStart, fileLength, null, null, 0, context.fifth,
-                    onBytesDecoded = { delta -> progress(onProgress, isCancelled, "verifying", bytes + delta, totalBytes, files, fileEntries.size) },
-                    isCancelled = isCancelled)
+                if (entry.type == "directory") continue
+                bytes += decodeEntry(entry, input, payloadStart, fileLength, null, null, 0, context.fifth)
                 files++
-                progress(onProgress, isCancelled, "verifying", bytes, totalBytes, files, fileEntries.size)
             }
         }
-        progress(onProgress, isCancelled, "completed", totalBytes, totalBytes, files, files)
         return VerifyResult(true, files, bytes, version)
     }
 
@@ -636,14 +556,9 @@ object ArchiveEngine {
 
     @JvmStatic
     @JvmOverloads
-    fun extract(
-        archive: File, destination: File, overwrite: Boolean = false, password: String? = null,
-        folderPasswords: Map<String, String> = emptyMap(),
-        onProgress: ((OperationProgress) -> Unit)? = null, isCancelled: (() -> Boolean)? = null
-    ): List<File> {
+    fun extract(archive: File, destination: File, overwrite: Boolean = false, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<File> {
         val allPaths = list(archive, password, folderPasswords).map { it.path }.toSet()
-        return extractSelected(archive, destination, allPaths, overwrite, password = password,
-            folderPasswords = folderPasswords, onProgress = onProgress, isCancelled = isCancelled).filter { it.isFile }
+        return extractSelected(archive, destination, allPaths, overwrite, password = password, folderPasswords = folderPasswords).filter { it.isFile }
     }
 
     private data class SourceItem(val name: String, val file: File, val directory: Boolean)

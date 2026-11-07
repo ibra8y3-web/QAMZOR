@@ -1,32 +1,29 @@
-QAMZOR 0.9.0 — Local source validation
-Date: 2026-11-04
+QAMZOR 0.7.2-dev — CI correction validation
+Date: 2026-11-03
 
-Python regression suite:
-  PYTHONPATH=src pytest -q
-  PASS: 90 passed, 9 subtests passed.
+Python unit tests:
+  PYTHONPATH=src python -m pytest -q
+  Result: PASS; 90 passed, 9 subtests passed.
 
-Python bytecode compilation:
-  python -m compileall -q src tests tools
-  PASS.
+Android Kotlin source corrections:
+  MainActivity.kt:78
+    Sequence is converted to a List before takeLast(100).
+  MainActivity.kt:986
+    Uses TextView.setSingleLine(true).
+  Result: source corrections applied; no local Android/Gradle compile claimed.
 
-Android/Kotlin validation:
-  Gradle executable: unavailable.
-  Gradle wrapper/JAR: absent.
-  Android SDK / ANDROID_HOME: unavailable.
-  AndroidX dependency cache: unavailable.
-  Therefore Kotlin JUnit, Android compilation, APK assembly and device tests were NOT RUN.
-  A no-classpath kotlinc parse attempt is not a valid Android compile; it emitted unresolved dependency diagnostics and is not counted as success.
+Kotlin Core source/test corrections:
+  compareContent verifies both archives before comparing file payload digests.
+  Directory records are excluded from content delta lists.
+  Regression assertion retains same-size/different-content and unchanged-file coverage.
+  Result: source/test corrections applied; no local Gradle/JUnit result claimed.
 
-Source implementation present but awaiting Android build/device acceptance:
-  WorkManager foreground jobs for seal/restore/verify, snapshots, and WebDAV transfer/sync;
-  cooperative safe-checkpoint pause/resume/cancel; local scheduled snapshots and retention;
-  Android-Keystore-backed secret vault; Ed25519 signing/verification; HTTPS WebDAV account UI;
-  USB/SD Storage Access Framework linking; QZRA 1.0–1.3 and protected folder scopes.
+GitHub Actions:
+  Android SDK setup/license acceptance is already configured in platform-builds.yml.
+  The supplied run reached Android Kotlin compilation, so SDK licensing was not the cause
+  of the reported failures. Re-run the workflow after committing this corrected source.
 
-Known functional limits (not claimed complete):
-  WorkManager replays interrupted transactions from the beginning; exact byte-offset resume is not implemented.
-  Android cloud UI is WebDAV only; native OAuth for Drive/Dropbox/OneDrive/S3 is not implemented.
-  Android snapshots are full QZRA archives, not chunk-deduplicated incremental snapshots.
-  Android archive interface supports QZRA, not ZIP/7z/TAR/RAR/GZIP/BZIP2/XZ.
-  Some interactive comparison/preview flows remain Activity/executor based.
-  No APK was created or tested on a physical device in this workspace.
+Environment limitation:
+  No system Gradle executable or Gradle wrapper is present in this workspace. Therefore
+  :core:test, :sdk:test, :desktopApp:installDist, :androidApp:assembleDebug and
+  :androidApp:testDebugUnitTest were not executed here.

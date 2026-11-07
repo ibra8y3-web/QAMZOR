@@ -6,7 +6,7 @@ import java.io.File
 /** Public JVM SDK facade. API is pre-1.0 and may change before a stable release. */
 class QamzorClient {
     companion object {
-        const val SDK_VERSION = "0.9.0"
+        const val SDK_VERSION = "0.7.2-dev"
         const val WRITER_FORMAT = "QZRA 1.1 / QZRA 1.2 encrypted / QZRA 1.3 private metadata and folder scopes"
         val READABLE_FORMATS = setOf("QZRA 1.0", "QZRA 1.1", "QZRA 1.2 encrypted", "QZRA 1.3 encrypted metadata and protected folders")
         const val QZRA_13_STATUS = "Implemented in Kotlin Core; verify cross-language CI before production use"

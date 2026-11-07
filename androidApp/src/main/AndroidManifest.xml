@@ -1,24 +1,15 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
-    <!-- Browse the whole phone and archive items in place (like RAR). Sideloaded builds only; Google Play restricts this permission. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Direct browsing of phone storage like RAR. No INTERNET permission is declared. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <application
-        android:requestLegacyExternalStorage="true"
         android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
         android:icon="@drawable/ic_qamzor"
         android:label="QAMZOR"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:supportsRtl="true">
-        <service
-            android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="dataSync"
-            tools:node="merge" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -31,12 +22,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="content" android:host="*" android:mimeType="*/*" />
-                <data android:scheme="file" android:host="*" android:mimeType="*/*" />
-                <data android:pathPattern=".*\\.qzra" />
-                <data android:pathPattern=".*\\..*\\.qzra" />
-                <data android:pathPattern=".*\\..*\\..*\\.qzra" />
-                <data android:pathPattern=".*\\..*\\..*\\..*\\.qzra" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.qzra" />
+                <data android:scheme="file" android:mimeType="*/*" android:pathPattern=".*\\.qzra" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -45,14 +32,5 @@
                 <data android:scheme="content" android:mimeType="application/vnd.qamzor.qzra" />
             </intent-filter>
         </activity>
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.files"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/qamzor_file_paths" />
-        </provider>
     </application>
 </manifest>

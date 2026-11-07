@@ -1,23 +1,11 @@
 # QAMZOR
 
-> Current project version: **0.9.0**. Python and Kotlin Core contain QZRA 1.3 reader/writer paths; Android source includes private metadata and protected-folder flows. Kotlin/Android build acceptance remains pending the configured GitHub Actions run.
+> Current development snapshot: **0.7.2-dev**. Python and Kotlin Core contain QZRA 1.3 reader/writer paths; Android source includes private metadata and protected-folder flows. Kotlin/Android build acceptance remains pending the configured GitHub Actions run.
 
 
 **QAMZOR** is an open-source archive and data-management project. Its native container format is **QZRA** (`.qzra`).
 
-> Current source delivery: version 0.9.0. Python and Kotlin Core support QZRA 1.0–1.3. Android now includes searchable file/archive browsing, in-place archive/restore/verify jobs through WorkManager, password and signing-key vaults, scheduled local snapshots, version restore, Ed25519 signing, USB/SD SAF access, and HTTPS WebDAV archive upload/download/sync. The Android source has not yet passed a Gradle/APK build in this workspace; do not treat this ZIP as a device-validated release. Python has Google Drive/Dropbox/OneDrive/S3 adapters; native Android OAuth for those providers remains open. This is development software, not a production-audited archive system.
-
-## 0.9.0 Android additions
-
-- Search phone files by name or extension and sort by modified date, name, size or type. The chosen sort order is remembered; directory-first and hidden-file settings are available.
-- Search and sort the immediate contents of an opened QZRA directory. After the manifest is authenticated, format metadata shows actual QZRA version, encryption/privacy state, file/folder counts and uncompressed size.
-- Create an in-place QZRA beside a selected file/folder and fully verify it before optionally deleting the source. The user can disable source deletion in Settings.
-- Encrypted creation supports a master password and up to 32 independently password-protected folder scopes. Scoped passwords are not persisted and are authenticated against real file payload data before being cached for the session.
-- Restore, selected extraction, verification and comparison pass independent folder passwords to the core engine. Restore rolls back partially moved results when a later move fails; if deleting the archive fails after successful restoration, restored data and the archive are both preserved and the failure is reported.
-- The Settings page controls hidden files, directory-first sorting, source retention, destructive-action confirmations, private temporary-cache cleanup and operation-history retention.
-- Split a QZRA archive into numbered volume files with a `.qzset` descriptor and per-part/full-archive SHA-256 hashes. Reassembly checks order, size, every part digest and the complete archive digest before publishing output. Source archives and volume parts are retained.
-- Large phone-directory listings are loaded on a dedicated executor rather than the Android UI thread. Desktop archive tasks use SwingWorker and marshal Swing dialogs/components to the event-dispatch thread.
-- Android long-running archive, restore, verify, snapshot and WebDAV operations use WorkManager foreground execution, saved task descriptors, progress/byte-rate/ETA reporting, cooperative pause/resume and cancellation. WorkManager persists scheduling over Activity closure/reboot. If Android kills the process mid-operation, WorkManager can rerun the transactional task from its beginning; byte-offset continuation within an archive/cloud stream is not implemented.
+> Current delivery: Python and Kotlin Core source support QZRA 1.0–1.3, with Android source exposing QZRA 1.3 metadata hiding and one independent folder-password scope. Kotlin JUnit tests and GitHub Actions build steps are authored, but the remote Gradle/APK run is still pending. Python CLI includes Drive/Dropbox/OneDrive/S3 adapters; those are not yet exposed through Android. Rust core, independent security review, native desktop installers and enterprise administration remain open. This is development software, not a production-audited archive system.
 
 ## Implemented
 
@@ -137,9 +125,9 @@ Apache-2.0. See [`LICENSE`](LICENSE).
 
 The repository includes Gradle modules for a native Android app (`androidApp`), a JVM desktop app (`desktopApp`), a shared Kotlin engine (`core`) and a pre-1.0 Kotlin SDK (`sdk`). Kotlin Core source now reads and writes QZRA 1.0–1.3; its default writer remains QZRA 1.1, an archive password selects encrypted QZRA 1.2, and `encryptMetadata=true` selects QZRA 1.3. QZRA 1.3 adds encrypted metadata and up to 32 independently protected folder scopes. Kotlin golden-fixture JUnit tests are authored but must pass on GitHub Actions before interoperability is certified.
 
-The Android app is now an in-place QZRA file-vault workflow: it writes a verified `.qzra` next to the selected file or folder and uses a persisted setting to decide whether the original should be retained or removed only after successful verification. It supports a master password and up to 32 independent QZRA 1.3 folder-password scopes. Folder keys are held only in the active session and are tested against payload data before being cached. The Settings tab controls hidden-file visibility, directory-first sorting, source retention, destructive-action confirmations, app-private temporary-cache cleanup and operation-history retention.
+The Android app supports multiple individual files and recursive folder trees through Android's Storage Access Framework. It stages each selected folder in private app storage, preserves the folder root, subfolders and empty directories, and accepts child documents even when a SAF provider omits their MIME type. It reports the number of copied files and total bytes before archiving. The protected archive flow can write encrypted QZRA 1.2 or QZRA 1.3 with hidden metadata and one independently password-protected folder scope; passwords are not persisted. Its **Virtual Archive Explorer** opens supported QZRA manifests, navigates immediate directory children interactively, reads and verifies a selected file directly from compressed archive blocks, and retains only bounded preview bytes. It supports text previews (2 MiB), PNG/JPEG/GIF/WEBP/BMP previews (16 MiB), and first-page PDF previews (16 MiB). Previewing does not unpack the archive entries to the user's storage, though the archive container is copied to private cache for random-access reads. Every successful file preview verifies the entire selected file's chunk and whole-file SHA-256 digests.
 
-Its **Virtual Archive Explorer** opens QZRA manifests, navigates and searches directory contents, reads and verifies a selected file directly from compressed archive blocks, and retains only bounded preview bytes. It supports text previews (2 MiB), PNG/JPEG/GIF/WEBP/BMP previews (16 MiB), and first-page PDF previews (16 MiB). Previewing does not unpack archive entries to user storage, though the archive container may be copied to private cache for random-access reads. Every successful file preview verifies the entire selected file's chunk and whole-file SHA-256 digests. The explorer can extract one file, one folder subtree or the complete archive. Restore uses a temporary staging directory and rollback for partial moves. DOCX/XLSX/ODT rendering and audio/video preview are not implemented; unsupported types can be extracted and opened with another application.
+The explorer can extract one selected file, one selected folder subtree, or the complete archive while preserving relative paths and empty directory entries. Encrypted QZRA 1.2/1.3 archives prompt for the master password and authenticate the manifest before the explorer is shown. QZRA 1.3 protected folders prompt for their own password when accessed. DOCX/XLSX/ODT rendering and audio/video preview are not implemented; unsupported types can be extracted and opened with another application.
 
 The Kotlin core now has cross-language fixtures and JUnit tests for QZRA 1.0/1.1/1.2/1.3 reading, QZRA 1.3 writing, independent folder unlock, virtual folder navigation, bounded preview, selected extraction and wrong-password rejection. These JUnit tests still require a successful Gradle run on GitHub. Do not treat the updated Android UI as release-ready until `Platform builds` succeeds and the new APK passes physical-device, large-file, SAF-provider, lifecycle and low-storage tests. See [Android user guide](docs/ANDROID_USER_GUIDE.md) and [Kotlin implementation status](docs/KOTLIN_IMPLEMENTATION.md).
 
@@ -192,7 +180,7 @@ A Python-generated protected-folder golden archive used by Kotlin cross-language
 
 ## Product feature expansion — Smart Exclusions, Volumes, Compare, Preview, Jobs and WebDAV
 
-The Python reference engine/CLI includes these additional workflows. Android 0.9.0 also exposes file/archive search and sorting, QZRA 1.3 creation/unlock, archive format details, verified split/reassembly volumes, WorkManager jobs, local snapshots, Ed25519 signing, USB/SD SAF and WebDAV account/sync UI. Smart Exclusions, Office preview and native OAuth screens for Drive/Dropbox/OneDrive/S3 remain Python-only or open platform work. See [`docs/PRODUCT_FEATURES.md`](docs/PRODUCT_FEATURES.md) for the exact platform matrix and limitations.
+The Python reference engine/CLI includes these additional workflows. The Android source separately exposes QZRA 1.3 creation/unlock and persistent operation history; Smart Exclusions, Split/Join, Office preview and cloud-provider login/sync UI are not yet in Android. See [`docs/PRODUCT_FEATURES.md`](docs/PRODUCT_FEATURES.md) for the exact platform matrix and limitations.
 
 ```bash
 # Smart exclusions: command-line patterns plus root/nested .qzignore files
@@ -225,12 +213,6 @@ Arabic implementation and operator notes for the added product features: [`docs/
 
 ## Native cloud-provider backups
 
-Python Core/CLI includes development HTTPS adapters for Google Drive, Dropbox, OneDrive and AWS/S3-compatible storage, in addition to WebDAV. They write checksum sidecars and verify size/SHA-256 before publishing restored files. The adapters require short-lived OAuth bearer tokens or S3 credentials supplied through runtime environment variables; interactive OAuth consent/refresh flow is not included. Android currently exposes HTTPS WebDAV account management, upload, verified download, and safe two-way sync for top-level `.qzra` files only. Drive/Dropbox/OneDrive/S3 OAuth account screens are not yet available in Android. See [`docs/CLOUD_CONNECTORS.md`](docs/CLOUD_CONNECTORS.md) for provider permissions, secrets and commands.
+Python Core/CLI includes development HTTPS adapters for Google Drive, Dropbox, OneDrive and AWS/S3-compatible storage, in addition to WebDAV. They write checksum sidecars and verify size/SHA-256 before publishing restored files. The adapters require short-lived OAuth bearer tokens or S3 credentials supplied through runtime environment variables; they do not contain an interactive OAuth consent/refresh flow, and no Android sync UI is included yet. See [`docs/CLOUD_CONNECTORS.md`](docs/CLOUD_CONNECTORS.md) for provider permissions, secrets and commands.
 
-The Android operation center observes WorkManager jobs and displays phase, progress, completed/total bytes, measured speed, estimated remaining time, file counts, result/error and cloud conflicts. Archive creation, restore, verification, local snapshot backup/restore/verification and WebDAV push/pull/sync use persistent WorkManager requests with pause/resume/cancel controls. A task surviving process death is safely re-enqueued by WorkManager but restarts the current transaction from its beginning rather than resuming at an exact byte offset. Phone-directory listing/sorting is performed off the UI thread.
-
-## Product strategy (Arabic)
-
-- [رؤية المنتج العالمية وخارطة التنفيذ](GLOBAL_PRODUCT_VISION_AR.md)
-- [المقارنة السوقية والبحث عن المنافسين](COMPETITIVE_RESEARCH_AR.md)
-
+The Android operation center now persists up to 100 secret-free events and records tasks interrupted by process restart. It is not a persistent WorkManager service and does not yet offer pause/resume/cancel controls; active operations are not guaranteed to survive process termination.
