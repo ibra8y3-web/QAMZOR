@@ -1,0 +1,29 @@
+QAMZOR 0.7.2-dev — CI correction validation
+Date: 2026-11-03
+
+Python unit tests:
+  PYTHONPATH=src python -m pytest -q
+  Result: PASS; 90 passed, 9 subtests passed.
+
+Android Kotlin source corrections:
+  MainActivity.kt:78
+    Sequence is converted to a List before takeLast(100).
+  MainActivity.kt:986
+    Uses TextView.setSingleLine(true).
+  Result: source corrections applied; no local Android/Gradle compile claimed.
+
+Kotlin Core source/test corrections:
+  compareContent verifies both archives before comparing file payload digests.
+  Directory records are excluded from content delta lists.
+  Regression assertion retains same-size/different-content and unchanged-file coverage.
+  Result: source/test corrections applied; no local Gradle/JUnit result claimed.
+
+GitHub Actions:
+  Android SDK setup/license acceptance is already configured in platform-builds.yml.
+  The supplied run reached Android Kotlin compilation, so SDK licensing was not the cause
+  of the reported failures. Re-run the workflow after committing this corrected source.
+
+Environment limitation:
+  No system Gradle executable or Gradle wrapper is present in this workspace. Therefore
+  :core:test, :sdk:test, :desktopApp:installDist, :androidApp:assembleDebug and
+  :androidApp:testDebugUnitTest were not executed here.

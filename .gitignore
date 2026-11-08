@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.coverage
+.pytest_cache/
+*.qzra
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+*.iml
+.idea/
