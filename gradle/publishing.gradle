@@ -18,6 +18,13 @@ if (!isAndroid) {
     } else {
         java { withJavadocJar() }
     }
+} else {
+    // AGP's Javadoc generation currently fails on Java records used by the Java SDK.
+    // Keep the required Maven Central javadoc artifact without invoking that generator.
+    tasks.register('javadocJar', Jar) {
+        archiveClassifier.set('javadoc')
+        from(rootProject.file('gradle/android-javadoc-placeholder.md'))
+    }
 }
 
 afterEvaluate {
@@ -29,6 +36,7 @@ afterEvaluate {
                 version = project.version.toString()
                 if (isAndroid) {
                     from components['release']
+                    artifact tasks.named('javadocJar')
                 } else {
                     from components['java']
                     if (project.ext.has('qamzorEmptyJavadoc')) {
