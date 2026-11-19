@@ -100,27 +100,36 @@ One-time maintainer steps:
 
 1. Sign in to [Sonatype Central Portal](https://central.sonatype.com/) using
    **Continue with GitHub** and the GitHub account `ibra8y3-web`.
-2. Open **View Namespaces** and confirm that
-   `io.github.ibra8y3-web` is present and marked **Verified**. GitHub sign-in
-   can provision this namespace automatically; do not assume it is verified
-   until the Portal shows that status.
-3. Generate a Central Portal user token.
-4. Generate a GPG signing key, keep the private key private, and publish the
-   public key to a public key server.
-5. Add the following GitHub repository **Secrets**:
+2. Open **View Namespaces**. Sonatype documents automatic provisioning of a
+   verified `io.github.<username>` namespace when the account signs in through
+   GitHub. For this repository the expected value is
+   `io.github.ibra8y3-web`. Confirm that the Portal actually lists it as
+   **Verified** before publishing; repository files cannot prove the private
+   account's Portal status.
+3. Generate a Central Portal user token at
+   [User Tokens](https://central.sonatype.com/usertoken). Save the displayed
+   token credentials immediately; Sonatype does not show them again after the
+   dialog closes.
+4. Generate a GPG signing key on your own trusted computer, keep its private
+   key private, and publish only the public key to a public key server.
+   Follow [Sonatype's GPG guide](https://central.sonatype.org/publish/requirements/gpg/).
+5. Add the following GitHub repository **Secrets** at
+   [Settings → Secrets and variables → Actions](https://github.com/ibra8y3-web/QAMZOR/settings/secrets/actions):
    - `SIGNING_KEY`: ASCII-armored private GPG key.
    - `SIGNING_KEY_PASSWORD`: password protecting that key.
    - `CENTRAL_PORTAL_USERNAME`: username from the generated Portal token.
    - `CENTRAL_PORTAL_TOKEN`: token password from the generated Portal token.
-6. Add these GitHub repository **Variables** with real maintainer details:
+6. Add these GitHub repository **Variables** under the same Settings page, in
+   the **Variables** tab, with real maintainer details:
    - `POM_URL`: `https://github.com/ibra8y3-web/QAMZOR`
    - `POM_SCM_URL`: `https://github.com/ibra8y3-web/QAMZOR.git`
    - `POM_DEVELOPER_ID`: `ibra8y3-web`
    - `POM_DEVELOPER_NAME`: maintainer's preferred public name.
    - `POM_DEVELOPER_EMAIL`: maintainer's public contact email.
 
-Do not put tokens, private keys, passwords, or personal archive files in Git.
-The release workflow requires the `maven-central` GitHub Environment; configure
+Do not send the token or private key in chat, commit them to Git, place them in
+workflow YAML, or add them as ordinary Variables. Put secrets only in the
+GitHub Secrets form. The release workflow requires the `maven-central` GitHub Environment; configure
 a required reviewer there so the Portal upload is reviewed before publication.
 
 ### Release flow
@@ -145,7 +154,41 @@ version comes from the tag without the leading `v`; versions ending in
 `SNAPSHOT` are rejected. The SDK remains pre-1.0 until the project explicitly
 declares a stable API.
 
-## 3. Local/CI publishing checks
+## 3. Prepare the GPG key and secrets safely
+
+Run the following on your own computer after installing GnuPG; do not run it in
+GitHub Actions and do not send the private-key output to anyone:
+
+```sh
+gpg --full-generate-key
+gpg --list-secret-keys --keyid-format LONG
+# Replace KEY_ID with the long key ID shown above.
+gpg --armor --export KEY_ID
+gpg --armor --export-secret-keys KEY_ID
+```
+
+Publish the **public** key (`--export`) to a public key server, as described by
+Sonatype. Put the **secret** key (`--export-secret-keys`) in the GitHub Secret
+`SIGNING_KEY`; put the key passphrase in `SIGNING_KEY_PASSWORD`. The Portal token
+must be split into `CENTRAL_PORTAL_USERNAME` and `CENTRAL_PORTAL_TOKEN` exactly
+as shown by Sonatype. Never paste any of these values into this chat.
+
+The workflow expects these repository Secrets:
+
+- `SIGNING_KEY`
+- `SIGNING_KEY_PASSWORD`
+- `CENTRAL_PORTAL_USERNAME`
+- `CENTRAL_PORTAL_TOKEN`
+
+And these repository Variables:
+
+- `POM_URL`
+- `POM_SCM_URL`
+- `POM_DEVELOPER_ID`
+- `POM_DEVELOPER_NAME`
+- `POM_DEVELOPER_EMAIL`
+
+## 4. Local/CI publishing checks
 
 The reusable workflow
 `.github/workflows/sdk-publishing-check.yml` simulates JitPack's coordinates
@@ -159,7 +202,7 @@ Maven Local and verifies the generated POM/binary files. A passing check validat
 the Gradle coordinates and publication configuration, but it does not replace
 the first real JitPack build or a Maven Central Portal deployment.
 
-## 4. Platform and security boundaries
+## 5. Platform and security boundaries
 
 - Native C/C++ is currently read-only and does not create QZRA archives.
 - Native CI targets Linux and macOS; Windows support is not claimed.
