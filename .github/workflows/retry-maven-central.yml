@@ -1,0 +1,120 @@
+name: Retry Maven Central deployment after key publication
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/retry-maven-central.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reupload:
+    name: Re-upload the verified QAMZOR 0.8.2 bundle
+    runs-on: ubuntu-latest
+    environment: maven-central
+    steps:
+      - name: Download the already-built, signed Central bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: central-bundle
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 44526618509
+          path: central-bundle
+
+      - name: Check the bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$(find central-bundle -maxdepth 2 -type f -name 'qamzor-0.8.2-bundle.zip' -print -quit)"
+          if [ -z "$BUNDLE" ]; then
+            echo "::error::The saved QAMZOR 0.8.2 Central bundle was not found."
+            find central-bundle -maxdepth 3 -type f -print || true
+            exit 1
+          fi
+          unzip -t "$BUNDLE" >/dev/null
+          echo "path=$BUNDLE" >> "$GITHUB_OUTPUT"
+          echo "Verified saved bundle: $BUNDLE"
+
+      - name: Upload a new user-managed deployment
+        id: upload
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_PORTAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PORTAL_TOKEN }}
+          BUNDLE_PATH: ${{ steps.bundle.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CENTRAL_USERNAME:-}" ] || [ -z "${CENTRAL_PASSWORD:-}" ]; then
+            echo "::error::Central Portal credentials are missing."
+            exit 1
+          fi
+          TOKEN="$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)"
+          DEPLOYMENT_ID="$(
+            curl --fail-with-body --silent --show-error -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -F "bundle=@$BUNDLE_PATH" \
+              "https://central.sonatype.com/api/v1/publisher/upload?name=qamzor-0.8.2-key-published-${GITHUB_RUN_ID}&publishingType=USER_MANAGED"
+          )"
+          if ! [[ "$DEPLOYMENT_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            echo "::error::Central Portal did not return a deployment ID."
+            echo "$DEPLOYMENT_ID"
+            exit 1
+          fi
+          echo "::add-mask::$DEPLOYMENT_ID"
+          echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+          echo "Submitted a new USER_MANAGED deployment for QAMZOR 0.8.2."
+
+      - name: Wait for Central validation
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_PORTAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PORTAL_TOKEN }}
+          DEPLOYMENT_ID: ${{ steps.upload.outputs.deployment_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)"
+          for attempt in $(seq 1 36); do
+            STATUS_JSON="$(
+              curl --fail-with-body --silent --show-error -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID"
+            )"
+            STATE="$(printf '%s' "$STATUS_JSON" | jq -r '.deploymentState // "UNKNOWN"')"
+            echo "Central validation state: $STATE (check $attempt/36)"
+            case "$STATE" in
+              VALIDATED)
+                {
+                  echo "## QAMZOR 0.8.2"
+                  echo
+                  echo "The corrected Central deployment passed validation and is waiting for the maintainer to press **Publish**."
+                  echo
+                  echo "Deployment ID: `$DEPLOYMENT_ID`"
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+                ;;
+              PUBLISHED)
+                echo "QAMZOR 0.8.2 is already published." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+                ;;
+              FAILED)
+                printf '%s\n' "$STATUS_JSON" | jq .
+                echo "::error::Sonatype validation failed. See the Central Portal response above."
+                exit 1
+                ;;
+              PENDING|VALIDATING)
+                sleep 10
+                ;;
+              *)
+                printf '%s\n' "$STATUS_JSON" | jq .
+                echo "::error::Unexpected Central deployment state: $STATE"
+                exit 1
+                ;;
+            esac
+          done
+          echo "::error::Central validation did not finish within the polling window."
+          exit 1
