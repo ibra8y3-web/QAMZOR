@@ -22,6 +22,13 @@ import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.text.TextUtils
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.HorizontalScrollView
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.ImageView
@@ -42,21 +49,12 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var pageTitle: TextView
     private lateinit var fileToolbar: LinearLayout
-    private lateinit var fileControls: LinearLayout
-    private lateinit var fileSearchField: EditText
-    private lateinit var fileFilterRow: LinearLayout
-    private lateinit var fileSortButton: TextView
-    private lateinit var fileViewButton: TextView
     private lateinit var fileListContainer: LinearLayout
     private lateinit var fileScroll: ScrollView
     private lateinit var permissionCard: View
     private lateinit var explorerContainer: LinearLayout
     private lateinit var explorerPathText: TextView
     private lateinit var archiveInfoText: TextView
-    private lateinit var archiveTabsRow: LinearLayout
-    private lateinit var archiveActionsRow: LinearLayout
-    private lateinit var archiveFilesTabButton: TextView
-    private lateinit var archiveFoldersTabButton: TextView
     private lateinit var logSummary: TextView
     private lateinit var logText: TextView
     private val pages = ArrayList<View>()
@@ -69,26 +67,41 @@ class MainActivity : Activity() {
     private var browseRoot: File = storageRoot
     private var currentDir: File = storageRoot
     private var currentItems: List<File> = emptyList()
-    private var fileSearchQuery: String = ""
-    private var fileFilter: String = "all"
-    private var fileSortMode: String = "name"
-    private var gridViewEnabled: Boolean = false
     private val selection = LinkedHashSet<File>()
+
+    // Files tab: search, quick filters, sorting and list/grid view
+    private var visibleItems: List<File> = emptyList()
+    private var currentUnreadable = false
+    private lateinit var fileControls: LinearLayout
+    private lateinit var searchField: EditText
+    private lateinit var searchClear: View
+    private lateinit var filterRow: LinearLayout
+    private lateinit var sortRow: LinearLayout
+    private lateinit var fileCountText: TextView
+    private var searchQuery = ""
+    private var activeFilter = FILTER_ALL
+    private var sortKey = SORT_NAME
+    private var sortAscending = true
+    private var gridMode = false
+    private var suppressSearchEvents = false
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val searchRunnable = Runnable { applyFileViewChange() }
+    /** Per-file [modified, size, isDirectory(1/0)] captured off the UI thread so sorting never touches disk. */
+    private val fileMeta = HashMap<File, LongArray>()
+
+    // Archive tab: archives found in phone storage
+    private var archiveLibraryBox: LinearLayout? = null
+    private var archiveScanResults: List<File> = emptyList()
+    private val archiveScanMeta = HashMap<File, LongArray>()
+    private var archiveScanning = false
+    private var archiveScanDone = false
+    private var archiveScanTime = 0L
+    private var archiveScanCapped = false
 
     private val backgroundTaskLock = Any()
     @Volatile private var backgroundBusy = false
     private var pendingExtraction: File? = null
     private var pendingExtractionPaths: Set<String>? = null
-    private var archiveLibraryTab: String = "files"
-    private val archiveLibraryEntries = mutableListOf<ArchiveLibraryEntry>()
-    private data class ArchiveLibraryEntry(
-        val id: String,
-        val archivePath: String,
-        val originalName: String,
-        val kind: String,
-        val createdAt: Long
-    )
-
     private var openedArchive: File? = null
     private var openedArchiveTemp = false
     private var openedArchiveLabel: String = ""
@@ -104,7 +117,6 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) purgeStaleCache()
         restoreOperationHistory()
-        restoreArchiveLibrary()
         buildInterface()
         if (savedInstanceState == null) handleViewIntent(intent)
     }
@@ -116,6 +128,7 @@ class MainActivity : Activity() {
                 if (permissionCard.visibility == View.VISIBLE || currentItems.isEmpty()) loadDirectory(currentDir)
             } else showPermissionState(true)
         }
+        if (currentTab == 1) refreshArchiveLibrary(false)
     }
 
     /** Working copies made from system-picker files never outlive the process that made them. */
@@ -137,6 +150,7 @@ class MainActivity : Activity() {
     override fun onBackPressed() {
         when {
             currentTab == 0 && selection.isNotEmpty() -> { selection.clear(); refreshFileViews() }
+            currentTab == 0 && (searchQuery.isNotEmpty() || activeFilter != FILTER_ALL) -> { resetFileFilters(); applyFileViewChange() }
             currentTab == 0 && currentDir.absolutePath != browseRoot.absolutePath -> { currentDir.parentFile?.let { loadDirectory(it) } }
             currentTab == 1 && openedArchive != null && explorerPath.isNotEmpty() -> showVirtualExplorer(explorerPath.substringBeforeLast('/', ""))
             currentTab != 0 -> selectTab(0)
@@ -299,7 +313,6 @@ class MainActivity : Activity() {
     }
 
     private fun selectTab(index: Int) {
-        if (currentTab == 1 && index != 1 && openedArchive != null) closeOpenedArchive()
         currentTab = index
         for ((position, page) in pages.withIndex()) page.visibility = if (position == index) View.VISIBLE else View.GONE
         for (position in navBoxes.indices) {
@@ -311,6 +324,7 @@ class MainActivity : Activity() {
         }
         pageTitle.text = TAB_TITLES[index]
         if (index == 2) refreshOperationLog()
+        if (index == 1) refreshArchiveLibrary(true)
     }
 
     private fun pageScroll(content: View): ScrollView = ScrollView(this).apply {
@@ -330,6 +344,7 @@ class MainActivity : Activity() {
     // ───────────────────────────── Page 1: Files (built-in file manager) ─────────────────────────────
 
     private fun buildFilesPage(): View {
+        loadFileViewPreferences()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
@@ -342,77 +357,8 @@ class MainActivity : Activity() {
             setPaddingRelative(dp(8), dp(4), dp(8), dp(4))
         }
         column.addView(fileToolbar, LinearLayout.LayoutParams(-1, dp(54)))
-
-        fileControls = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(dp(12), dp(2), dp(12), dp(8))
-        }
-        fileSearchField = EditText(this).apply {
-            hint = "ابحث في هذا المجلد..."
-            setHintTextColor(0xFF8FA4C8.toInt())
-            setTextColor(0xFFF4F7FF.toInt())
-            textSize = 13f
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
-            setSingleLine(true)
-            background = rounded(0xFF1D3152.toInt(), 11)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            addTextChangedListener(object : android.text.TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    fileSearchQuery = s?.toString().orEmpty()
-                    if (::fileListContainer.isInitialized && currentItems.isNotEmpty()) renderFileList(currentItems, false)
-                }
-                override fun afterTextChanged(s: android.text.Editable?) = Unit
-            })
-        }
-        fileControls.addView(fileSearchField, LinearLayout.LayoutParams(-1, dp(44)))
-
-        val filterScroller = android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            clipToPadding = false
-            setPadding(0, dp(7), 0, dp(5))
-        }
-        fileFilterRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        filterScroller.addView(fileFilterRow)
-        fileControls.addView(filterScroller, LinearLayout.LayoutParams(-1, dp(48)))
-
-        val fileActionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        fileSortButton = label("", 11.5f, 0xFFE6EEFC.toInt(), true).apply {
-            gravity = Gravity.CENTER
-            background = rounded(0xFF263D63.toInt(), 10)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { showFileSortDialog() }
-        }
-        fileViewButton = label("", 11.5f, 0xFFE6EEFC.toInt(), true).apply {
-            gravity = Gravity.CENTER
-            background = rounded(0xFF263D63.toInt(), 10)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                gridViewEnabled = !gridViewEnabled
-                renderFileControls()
-                refreshFileViews()
-            }
-        }
-        fileActionRow.addView(fileSortButton, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(5) })
-        fileActionRow.addView(fileViewButton, LinearLayout.LayoutParams(dp(116), dp(38)).apply { marginStart = dp(5) })
-        fileControls.addView(fileActionRow, LinearLayout.LayoutParams(-1, dp(42)))
+        fileControls = buildFileControls()
         column.addView(fileControls, LinearLayout.LayoutParams(-1, -2))
-        renderFileControls()
-
         fileListContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(2), dp(12), dp(16))
@@ -504,118 +450,32 @@ class MainActivity : Activity() {
         fileScroll.post { fileScroll.scrollTo(0, y) }
     }
 
-    private fun renderFileControls() {
-        if (!::fileFilterRow.isInitialized) return
-        fileFilterRow.removeAllViews()
-        val filters = listOf(
-            "all" to "الكل",
-            "folders" to "مجلدات",
-            "qzra" to "QZRA",
-            "images" to "صور",
-            "documents" to "مستندات"
-        )
-        for ((key, caption) in filters) {
-            val selected = fileFilter == key
-            val chip = label(caption, 11.5f, if (selected) 0xFFFFFFFF.toInt() else 0xFFBBD2FF.toInt(), selected).apply {
-                gravity = Gravity.CENTER
-                background = rounded(if (selected) 0xFF3F6FD8.toInt() else 0xFF1D3152.toInt(), 10)
-                setPadding(dp(13), dp(7), dp(13), dp(7))
-                isClickable = true
-                isFocusable = true
-                setOnClickListener {
-                    fileFilter = key
-                    renderFileControls()
-                    refreshFileViews()
-                }
-            }
-            fileFilterRow.addView(chip, LinearLayout.LayoutParams(-2, dp(36)).apply {
-                marginStart = dp(4)
-                marginEnd = dp(4)
-            })
-        }
-        fileSortButton.text = "ترتيب: " + when (fileSortMode) {
-            "date" -> "التاريخ"
-            "size" -> "الحجم"
-            else -> "الاسم"
-        }
-        fileViewButton.text = if (gridViewEnabled) "عرض قائمة" else "عرض شبكة"
-    }
-
-    private fun showFileSortDialog() {
-        val options = arrayOf("الاسم", "التاريخ", "الحجم")
-        val selected = when (fileSortMode) {
-            "date" -> 1
-            "size" -> 2
-            else -> 0
-        }
-        AlertDialog.Builder(this)
-            .setTitle("ترتيب الملفات")
-            .setSingleChoiceItems(options, selected) { dialog, which ->
-                fileSortMode = when (which) {
-                    1 -> "date"
-                    2 -> "size"
-                    else -> "name"
-                }
-                dialog.dismiss()
-                renderFileControls()
-                refreshFileViews()
-            }
-            .setNegativeButton("إلغاء", null)
-            .show()
-    }
-
-    private fun filteredAndSortedFiles(items: List<File>): List<File> {
-        val query = fileSearchQuery.trim().lowercase(Locale.ROOT)
-        val filtered = items.filter { file ->
-            val matchesSearch = query.isEmpty() || file.name.lowercase(Locale.ROOT).contains(query)
-            val extension = file.extension.lowercase(Locale.ROOT)
-            val matchesFilter = when (fileFilter) {
-                "folders" -> file.isDirectory
-                "qzra" -> isQzra(file)
-                "images" -> file.isFile && extension in IMAGE_EXTENSIONS
-                "documents" -> file.isFile && extension in DOCUMENT_EXTENSIONS
-                else -> true
-            }
-            matchesSearch && matchesFilter
-        }
-        val comparator = when (fileSortMode) {
-            "date" -> compareBy<File> { !it.isDirectory }
-                .thenByDescending { it.lastModified() }
-                .thenBy { it.name.lowercase(Locale.ROOT) }
-                .thenBy { it.name }
-            "size" -> compareBy<File> { !it.isDirectory }
-                .thenByDescending { if (it.isFile) it.length() else 0L }
-                .thenBy { it.name.lowercase(Locale.ROOT) }
-                .thenBy { it.name }
-            else -> compareBy<File> { !it.isDirectory }
-                .thenBy { it.name.lowercase(Locale.ROOT) }
-                .thenBy { it.name }
-        }
-        return filtered.sortedWith(comparator)
-    }
-
     private fun loadDirectory(dir: File) {
         if (!hasStorageAccess()) {
             showPermissionState(true)
             return
         }
         showPermissionState(false)
+        val changedFolder = dir.absolutePath != currentDir.absolutePath
         currentDir = dir
         selection.clear()
-        fileSearchQuery = ""
-        fileFilter = "all"
-        if (::fileSearchField.isInitialized && fileSearchField.text.isNotEmpty()) fileSearchField.setText("")
-        renderFileControls()
+        if (changedFolder) resetFileFilters()
         renderToolbar()
         Thread {
             val raw = try { dir.listFiles() } catch (_: Exception) { null }
-            val items = (raw?.toList() ?: emptyList())
-                .filter { !it.name.startsWith(".") }
-                .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) }))
-                .take(3000)
+            val items = (raw?.toList() ?: emptyList()).filter { !it.name.startsWith(".") }
+            val meta = HashMap<File, LongArray>(items.size * 2 + 16)
+            for (item in items) {
+                val directory = item.isDirectory
+                val lock = if (!directory && item.name.endsWith(".qzra", ignoreCase = true)) archiveLockLevel(item) else 0L
+                meta[item] = longArrayOf(item.lastModified(), if (directory) 0L else item.length(), if (directory) 1L else 0L, lock)
+            }
             runOnUiThread {
                 if (currentDir == dir) {
                     currentItems = items
+                    currentUnreadable = raw == null
+                    fileMeta.clear()
+                    fileMeta.putAll(meta)
                     renderFileList(items, raw == null)
                     fileScroll.scrollTo(0, 0)
                 }
@@ -626,89 +486,419 @@ class MainActivity : Activity() {
     private fun renderFileList(items: List<File>, unreadable: Boolean) {
         fileListContainer.removeAllViews()
         if (unreadable) {
+            visibleItems = emptyList()
+            fileCountText.text = ""
             fileListContainer.addView(label("تعذر قراءة هذا المجلد.", 13f, 0xFFFFB6B6.toInt(), false)
                 .apply { setPadding(dp(6), dp(24), dp(6), dp(24)); gravity = Gravity.CENTER })
             return
         }
         if (items.isEmpty()) {
+            visibleItems = emptyList()
+            fileCountText.text = ""
             fileListContainer.addView(label("هذا المجلد فارغ.", 13f, 0xFF9FB4D3.toInt(), false)
                 .apply { setPadding(dp(6), dp(24), dp(6), dp(24)); gravity = Gravity.CENTER })
             return
         }
-        val visibleItems = filteredAndSortedFiles(items)
-        if (visibleItems.isEmpty()) {
-            fileListContainer.addView(label("لا توجد ملفات أو مجلدات تطابق البحث أو الفلتر المحدد.", 12.5f, 0xFF9FB4D3.toInt(), false)
-                .apply { setPadding(dp(6), dp(24), dp(6), dp(24)); gravity = Gravity.CENTER })
+        val shown = applyFileView(items)
+        visibleItems = shown
+        fileCountText.text = if (shown.size == items.size) "${items.size} عنصر" else "${shown.size} من ${items.size}"
+        if (shown.isEmpty()) {
+            fileListContainer.addView(label("لا توجد نتائج مطابقة.", 13f, 0xFF9FB4D3.toInt(), false)
+                .apply { setPadding(dp(6), dp(24), dp(6), dp(10)); gravity = Gravity.CENTER })
+            fileListContainer.addView(actionButton("close", "مسح البحث والفلاتر", false) { resetFileFilters(); applyFileViewChange() },
+                LinearLayout.LayoutParams(-1, dp(44)))
             return
         }
-        if (!gridViewEnabled) {
-            for (file in visibleItems) {
+        if (gridMode) {
+            renderGrid(shown)
+        } else {
+            for (file in shown) {
                 fileListContainer.addView(fileRow(file), LinearLayout.LayoutParams(-1, dp(62)).apply { bottomMargin = dp(6) })
             }
-            return
-        }
-        for (rowItems in visibleItems.chunked(2)) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutDirection = View.LAYOUT_DIRECTION_RTL
-            }
-            for ((index, file) in rowItems.withIndex()) {
-                row.addView(fileGridCard(file), LinearLayout.LayoutParams(0, dp(126), 1f).apply {
-                    if (index == 0) marginEnd = dp(4) else marginStart = dp(4)
-                })
-            }
-            if (rowItems.size == 1) {
-                row.addView(View(this), LinearLayout.LayoutParams(0, dp(126), 1f).apply { marginStart = dp(4) })
-            }
-            fileListContainer.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         }
     }
 
-    private fun fileGridCard(file: File): View {
-        val style = typeStyle(file)
-        val selected = selection.contains(file)
-        val card = LinearLayout(this).apply {
+    // ───────────────────────────── Files tab: search, quick filters, sorting, list/grid ─────────────────────────────
+
+    private fun viewPreferences() = getSharedPreferences("qamzor-file-view", Context.MODE_PRIVATE)
+
+    private fun loadFileViewPreferences() {
+        val preferences = viewPreferences()
+        sortKey = preferences.getInt("sort_key", SORT_NAME).coerceIn(SORT_NAME, SORT_SIZE)
+        sortAscending = preferences.getBoolean("sort_asc", true)
+        gridMode = preferences.getBoolean("grid", false)
+    }
+
+    private fun saveFileViewPreferences() {
+        viewPreferences().edit()
+            .putInt("sort_key", sortKey)
+            .putBoolean("sort_asc", sortAscending)
+            .putBoolean("grid", gridMode)
+            .apply()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::fileListContainer.isInitialized && gridMode) applyFileViewChange()
+    }
+
+    private fun hideKeyboard(view: View) {
+        try {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.hideSoftInputFromWindow(view.windowToken, 0)
+        } catch (_: Exception) { /* best effort */ }
+    }
+
+    private fun buildFileControls(): LinearLayout {
+        val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(dp(9), dp(8), dp(9), dp(8))
+            setPadding(dp(12), dp(2), dp(12), dp(4))
+        }
+
+        // Search bar: searches the folder that is currently open.
+        val searchBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(0xFF1D3152.toInt(), 14)
+            setPaddingRelative(dp(12), 0, dp(4), 0)
+        }
+        searchBar.addView(QamzorLineIconView(this, "search", 0xFF9FB4D3.toInt()),
+            LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(8) })
+        searchField = EditText(this).apply {
+            hint = "ابحث في هذا المجلد"
+            setHintTextColor(0xFF7F95BA.toInt())
+            setTextColor(0xFFF4F7FF.toInt())
+            textSize = 13.5f
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            background = null
+            setPadding(0, dp(10), 0, dp(10))
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+            contentDescription = "بحث في المجلد الحالي"
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    if (suppressSearchEvents) return
+                    searchQuery = s?.toString().orEmpty().trim()
+                    searchClear.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+                    uiHandler.removeCallbacks(searchRunnable)
+                    uiHandler.postDelayed(searchRunnable, 180L)
+                }
+            })
+            setOnEditorActionListener { view, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEARCH) { hideKeyboard(view); true } else false
+            }
+        }
+        searchBar.addView(searchField, LinearLayout.LayoutParams(0, -1, 1f))
+        searchClear = toolbarButton("close", "مسح البحث", 0xFF9FB4D3.toInt()) {
+            uiHandler.removeCallbacks(searchRunnable)
+            setSearchText("")
+            applyFileViewChange()
+        }.apply { visibility = View.GONE }
+        searchBar.addView(searchClear, LinearLayout.LayoutParams(dp(38), dp(38)))
+        box.addView(searchBar, LinearLayout.LayoutParams(-1, dp(44)))
+
+        // Quick filters.
+        filterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val chipScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isFillViewport = true
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            addView(filterRow, FrameLayout.LayoutParams(-2, -2))
+        }
+        box.addView(chipScroll, LinearLayout.LayoutParams(-1, dp(36)).apply { topMargin = dp(8) })
+
+        // Sorting + list/grid switch.
+        fileCountText = label("", 10.5f, 0xFF7F95BA.toInt(), false).apply { gravity = Gravity.CENTER }
+        sortRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        box.addView(sortRow, LinearLayout.LayoutParams(-1, dp(38)).apply { topMargin = dp(4) })
+
+        renderFilterChips()
+        renderSortBar()
+        return box
+    }
+
+    private fun renderFilterChips() {
+        filterRow.removeAllViews()
+        val names = listOf("الكل", "مجلدات", "qzra", "صور", "مستندات", "🔒 محمية")
+        for ((index, caption) in names.withIndex()) {
+            val on = index == activeFilter
+            val chip = TextView(this).apply {
+                text = caption
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setTypeface(null, if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+                setTextColor(if (on) 0xFFFFFFFF.toInt() else 0xFFB7C9E8.toInt())
+                background = rounded(if (on) COLOR_ACCENT else 0xFF1D3152.toInt(), 16)
+                setPadding(dp(14), 0, dp(14), 0)
+                isClickable = true
+                isFocusable = true
+                contentDescription = "فلتر $caption"
+                setOnClickListener {
+                    if (activeFilter != index) {
+                        activeFilter = index
+                        renderFilterChips()
+                        applyFileViewChange()
+                    }
+                }
+            }
+            filterRow.addView(chip, LinearLayout.LayoutParams(-2, dp(32)).apply { marginEnd = dp(8) })
+        }
+    }
+
+    private fun renderSortBar() {
+        sortRow.removeAllViews()
+        sortRow.addView(label("ترتيب:", 11f, 0xFF7F95BA.toInt(), false),
+            LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
+        val names = listOf("الاسم", "التاريخ", "الحجم")
+        for ((index, caption) in names.withIndex()) {
+            val on = index == sortKey
+            val arrow = if (!on) "" else if (sortAscending) "  ↑" else "  ↓"
+            val pill = TextView(this).apply {
+                text = "$caption$arrow"
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setTypeface(null, if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+                setTextColor(if (on) 0xFFFFFFFF.toInt() else 0xFF9FB4D3.toInt())
+                background = rounded(if (on) 0xFF2A4678.toInt() else 0x00000000, 15)
+                setPadding(dp(11), 0, dp(11), 0)
+                isClickable = true
+                isFocusable = true
+                contentDescription = "ترتيب حسب $caption"
+                setOnClickListener {
+                    if (sortKey == index) sortAscending = !sortAscending
+                    else { sortKey = index; sortAscending = index == SORT_NAME }
+                    saveFileViewPreferences()
+                    renderSortBar()
+                    applyFileViewChange()
+                }
+            }
+            sortRow.addView(pill, LinearLayout.LayoutParams(-2, dp(30)).apply { marginEnd = dp(4) })
+        }
+        (fileCountText.parent as? android.view.ViewGroup)?.removeView(fileCountText)
+        sortRow.addView(fileCountText, LinearLayout.LayoutParams(0, -2, 1f))
+        val toggle = toolbarButton(if (gridMode) "list" else "grid", if (gridMode) "عرض قائمة" else "عرض شبكة", 0xFFBBD2FF.toInt()) {
+            gridMode = !gridMode
+            saveFileViewPreferences()
+            renderSortBar()
+            applyFileViewChange()
+        }
+        sortRow.addView(toggle, LinearLayout.LayoutParams(dp(40), dp(34)))
+    }
+
+    private fun setSearchText(text: String) {
+        suppressSearchEvents = true
+        try {
+            searchField.setText(text)
+            searchField.setSelection(searchField.text.length)
+        } finally {
+            suppressSearchEvents = false
+        }
+        searchQuery = text.trim()
+        searchClear.visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    /** Search and filter always belong to one folder; entering another folder starts clean. */
+    private fun resetFileFilters() {
+        uiHandler.removeCallbacks(searchRunnable)
+        activeFilter = FILTER_ALL
+        setSearchText("")
+        renderFilterChips()
+        hideKeyboard(searchField)
+    }
+
+    private fun applyFileViewChange() {
+        renderFileList(currentItems, currentUnreadable)
+        fileScroll.scrollTo(0, 0)
+    }
+
+    /** 0 = not protected, 1 = encrypted, 2 = encrypted with hidden names — read from the header only. */
+    private fun archiveLockLevel(file: File): Long {
+        val info = try { ArchiveEngine.inspect(file) } catch (_: Exception) { null } ?: return 0L
+        return if (info.namesHidden) 2L else if (info.encrypted) 1L else 0L
+    }
+
+    private fun lockLevel(file: File): Int = (fileMeta[file]?.getOrNull(3) ?: 0L).toInt()
+
+    /** Small gold padlock in the corner of an icon badge. */
+    private fun withLockMark(base: View, level: Int, size: Int): View {
+        if (level <= 0) return base
+        val frame = FrameLayout(this)
+        frame.addView(base, FrameLayout.LayoutParams(-1, -1))
+        val mark = FrameLayout(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF0B1730.toInt()); setStroke(dp(1), 0xFFFFD27A.toInt()) }
+            addView(QamzorLineIconView(this@MainActivity, "lock", 0xFFFFD27A.toInt()), FrameLayout.LayoutParams(dp(11), dp(11), Gravity.CENTER))
+        }
+        frame.addView(mark, FrameLayout.LayoutParams(dp(18), dp(18), Gravity.BOTTOM or Gravity.END))
+        frame.layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
+        return frame
+    }
+
+    private fun isDir(file: File): Boolean = fileMeta[file]?.let { it[2] == 1L } ?: file.isDirectory
+
+    private fun metaValue(file: File, index: Int): Long = fileMeta[file]?.get(index) ?: 0L
+
+    private fun applyFileView(items: List<File>): List<File> {
+        val needle = if (searchQuery.isEmpty()) "" else normalizeForSearch(searchQuery)
+        val filtered = items.filter { file ->
+            matchesFilter(file) && (needle.isEmpty() || normalizeForSearch(file.name).contains(needle))
+        }
+        return filtered.sortedWith(fileComparator()).take(MAX_RENDERED_ITEMS)
+    }
+
+    private fun matchesFilter(file: File): Boolean {
+        val directory = isDir(file)
+        return when (activeFilter) {
+            FILTER_FOLDERS -> directory
+            FILTER_QZRA -> !directory && file.name.endsWith(".qzra", ignoreCase = true)
+            FILTER_IMAGES -> !directory && file.extension.lowercase(Locale.ROOT) in IMAGE_EXTENSIONS
+            FILTER_DOCS -> !directory && file.extension.lowercase(Locale.ROOT) in DOCUMENT_EXTENSIONS
+            FILTER_LOCKED -> !directory && lockLevel(file) > 0
+            else -> true
+        }
+    }
+
+    /** Folders always come first; inside each group the chosen key and direction apply. */
+    private fun fileComparator(): Comparator<File> {
+        val sign = if (sortAscending) 1 else -1
+        return Comparator<File> { a, b ->
+            val aDir = isDir(a)
+            val bDir = isDir(b)
+            val groupOrder = if (aDir == bDir) 0 else if (aDir) -1 else 1
+            if (groupOrder != 0) {
+                groupOrder
+            } else {
+                val byName = naturalCompare(a.name, b.name)
+                when {
+                    sortKey == SORT_NAME -> sign * byName
+                    sortKey == SORT_DATE -> {
+                        val byDate = metaValue(a, 0).compareTo(metaValue(b, 0))
+                        if (byDate != 0) sign * byDate else byName
+                    }
+                    aDir -> byName
+                    else -> {
+                        val bySize = metaValue(a, 1).compareTo(metaValue(b, 1))
+                        if (bySize != 0) sign * bySize else byName
+                    }
+                }
+            }
+        }
+    }
+
+    /** "file (2)" sorts before "file (10)". */
+    private fun naturalCompare(left: String, right: String): Int {
+        val l = left.lowercase(Locale.ROOT)
+        val r = right.lowercase(Locale.ROOT)
+        var i = 0
+        var j = 0
+        while (i < l.length && j < r.length) {
+            val a = l[i]
+            val b = r[j]
+            if (a.isDigit() && b.isDigit()) {
+                var ei = i
+                while (ei < l.length && l[ei].isDigit()) ei++
+                var ej = j
+                while (ej < r.length && r[ej].isDigit()) ej++
+                val na = l.substring(i, ei).trimStart('0')
+                val nb = r.substring(j, ej).trimStart('0')
+                if (na.length != nb.length) return na.length.compareTo(nb.length)
+                val c = na.compareTo(nb)
+                if (c != 0) return c
+                i = ei
+                j = ej
+            } else {
+                if (a != b) return a.compareTo(b)
+                i++
+                j++
+            }
+        }
+        val rest = (l.length - i).compareTo(r.length - j)
+        return if (rest != 0) rest else left.compareTo(right)
+    }
+
+    /** Ignores case, Arabic diacritics/tatweel, hamza forms of alef, ya/alef-maksura, ta-marbuta and digit shapes. */
+    private fun normalizeForSearch(value: String): String {
+        val decomposed = Normalizer.normalize(value, Normalizer.Form.NFKD)
+        val out = StringBuilder(decomposed.length)
+        for (ch in decomposed) {
+            if (Character.getType(ch) == Character.NON_SPACING_MARK.toInt()) continue
+            when (ch) {
+                '\u0640' -> {}
+                '\u0649' -> out.append('\u064A')
+                '\u0629' -> out.append('\u0647')
+                else -> {
+                    val digit = Character.digit(ch, 10)
+                    if (digit >= 0) out.append('0' + digit) else out.append(ch)
+                }
+            }
+        }
+        return out.toString().lowercase(Locale.ROOT)
+    }
+
+    private fun gridColumns(): Int {
+        val widthDp = resources.displayMetrics.widthPixels / resources.displayMetrics.density
+        return (widthDp / 104f).toInt().coerceIn(2, 6)
+    }
+
+    private fun renderGrid(files: List<File>) {
+        val columns = gridColumns()
+        var index = 0
+        while (index < files.size) {
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+            }
+            for (offset in 0 until columns) {
+                val file = files.getOrNull(index + offset)
+                val cell: View = if (file != null) fileCell(file) else View(this)
+                line.addView(cell, LinearLayout.LayoutParams(0, dp(124), 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
+            }
+            fileListContainer.addView(line, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+            index += columns
+        }
+    }
+
+    private fun fileCell(file: File): View {
+        val style = typeStyle(file)
+        val selected = selection.contains(file)
+        val cell = FrameLayout(this).apply {
             background = rounded(if (selected) 0xFF27457A.toInt() else 0xFF14223F.toInt(), 14)
             isClickable = true
             isFocusable = true
             setOnClickListener { onFileTap(file) }
             setOnLongClickListener { toggleSelection(file); true }
         }
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            gravity = Gravity.CENTER_VERTICAL
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(6), dp(12), dp(6), dp(8))
         }
-        top.addView(
-            if (selected) iconBadge("check", COLOR_ACCENT, 0xFFFFFFFF.toInt(), 38)
-            else iconBadge(style.first, style.second, style.third, 38),
-            LinearLayout.LayoutParams(dp(38), dp(38))
-        )
-        top.addView(View(this), LinearLayout.LayoutParams(0, dp(36), 1f))
-        top.addView(toolbarButton("more", "خيارات ${file.name}", 0xFF9FB4D3.toInt()) {
-            showItemSheet(file)
-        }, LinearLayout.LayoutParams(dp(32), dp(36)))
-        card.addView(top)
-        card.addView(label(file.name, 12.5f, 0xFFF4F7FF.toInt(), true).apply {
+        val badge = if (selected) iconBadge("check", COLOR_ACCENT, 0xFFFFFFFF.toInt(), 52) else iconBadge(style.first, style.second, style.third, 52)
+        content.addView(withLockMark(badge, if (selected) 0 else lockLevel(file), 52), LinearLayout.LayoutParams(dp(52), dp(52)))
+        content.addView(label(file.name, 12f, 0xFFF4F7FF.toInt(), true).apply {
             maxLines = 2
-            ellipsize = TextUtils.TruncateAt.MIDDLE
-            setPadding(0, dp(5), 0, 0)
-        }, LinearLayout.LayoutParams(-1, -2))
-        val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(file.lastModified()))
-        val detail = when {
-            file.isDirectory -> "مجلد • $date"
-            isQzra(file) -> "QZRA • ${formatBytes(file.length())}"
-            else -> "${formatBytes(file.length())} • $date"
-        }
-        card.addView(label(detail, 9.5f, 0xFF9FB4D3.toInt(), false).apply {
-            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setSingleLine(true)
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
-        return card
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, 0)
+        })
+        val detail = if (isDir(file)) "مجلد" else formatBytes(fileMeta[file]?.get(1) ?: file.length())
+        content.addView(label(detail, 10f, 0xFF9FB4D3.toInt(), false).apply { maxLines = 1; gravity = Gravity.CENTER })
+        cell.addView(content, FrameLayout.LayoutParams(-1, -1))
+        cell.addView(toolbarButton("more", "خيارات ${file.name}", 0xFF9FB4D3.toInt()) { showItemSheet(file) },
+            FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.START))
+        return cell
     }
 
     private fun isQzra(file: File): Boolean = file.isFile && file.name.endsWith(".qzra", ignoreCase = true)
@@ -741,7 +931,7 @@ class MainActivity : Activity() {
             setOnLongClickListener { toggleSelection(file); true }
         }
         val badge = if (selected) iconBadge("check", COLOR_ACCENT, 0xFFFFFFFF.toInt(), 42) else iconBadge(style.first, style.second, style.third, 42)
-        row.addView(badge, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(12) })
+        row.addView(withLockMark(badge, if (selected) 0 else lockLevel(file), 42), LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(12) })
         val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         texts.addView(label(file.name, 14f, 0xFFF4F7FF.toInt(), true).apply {
             maxLines = 1; ellipsize = TextUtils.TruncateAt.MIDDLE; setSingleLine(true)
@@ -749,7 +939,11 @@ class MainActivity : Activity() {
         val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(file.lastModified()))
         val detail = when {
             file.isDirectory -> "مجلد  •  $date"
-            isQzra(file) -> "QZRA  •  ${formatBytes(file.length())}  •  $date"
+            isQzra(file) -> "QZRA  •  ${formatBytes(file.length())}  •  $date" + when (lockLevel(file)) {
+                2 -> "  •  🔒 مشفّر + أسماء مخفية"
+                1 -> "  •  🔒 مشفّر"
+                else -> ""
+            }
             else -> "${formatBytes(file.length())}  •  $date"
         }
         texts.addView(label(detail, 10.5f, 0xFF9FB4D3.toInt(), false).apply { maxLines = 1 })
@@ -895,7 +1089,7 @@ class MainActivity : Activity() {
                     canvas.drawRect(5f, 9f, 19f, 20f, stroke)
                     canvas.drawLine(10f, 13f, 14f, 13f, stroke)
                 }
-                "tools" -> {
+                "tools", "grid" -> {
                     canvas.drawRect(4f, 4f, 10f, 10f, stroke)
                     canvas.drawRect(14f, 4f, 20f, 10f, stroke)
                     canvas.drawRect(4f, 14f, 10f, 20f, stroke)
@@ -927,6 +1121,19 @@ class MainActivity : Activity() {
                     canvas.drawLine(9.6f, 17f, 9.6f, 5f, stroke)
                     shape.reset(); shape.moveTo(9.6f, 5f); shape.lineTo(18f, 7.5f); shape.lineTo(18f, 10f); shape.lineTo(9.6f, 8f)
                     canvas.drawPath(shape, stroke)
+                }
+                "search" -> {
+                    canvas.drawCircle(10.5f, 10.5f, 6.5f, stroke)
+                    canvas.drawLine(15.3f, 15.3f, 20.5f, 20.5f, stroke)
+                }
+                "minus" -> canvas.drawLine(5f, 12f, 19f, 12f, stroke)
+                "list" -> {
+                    canvas.drawLine(9f, 6f, 20f, 6f, stroke)
+                    canvas.drawLine(9f, 12f, 20f, 12f, stroke)
+                    canvas.drawLine(9f, 18f, 20f, 18f, stroke)
+                    canvas.drawCircle(4.8f, 6f, 0.9f, stroke)
+                    canvas.drawCircle(4.8f, 12f, 0.9f, stroke)
+                    canvas.drawCircle(4.8f, 18f, 0.9f, stroke)
                 }
                 "more" -> {
                     canvas.drawCircle(12f, 5f, 1.3f, stroke)
@@ -1033,7 +1240,7 @@ class MainActivity : Activity() {
 
     private fun showSelectionSheet() {
         val actions = ArrayList<SheetAction>()
-        actions += SheetAction("check", "تحديد الكل", false) { selection.addAll(currentItems); refreshFileViews() }
+        actions += SheetAction("check", "تحديد الكل", false) { selection.addAll(visibleItems); refreshFileViews() }
         val chosen = selection.toList()
         if (chosen.size == 2 && chosen.all { isQzra(it) }) {
             actions += SheetAction("compare", "مقارنة الأرشيفين", false) { compareArchiveFiles(chosen[0], chosen[1]) }
@@ -1094,11 +1301,7 @@ class MainActivity : Activity() {
                 when {
                     name.isEmpty() || name.contains('/') -> { status.text = "الاسم غير صالح." }
                     target.exists() -> { status.text = "يوجد عنصر بنفس الاسم." }
-                    file.renameTo(target) -> {
-                        if (file.name.endsWith(".qzra", ignoreCase = true)) updateArchiveLibraryPath(file, target)
-                        status.text = "تمت إعادة التسمية."
-                        loadDirectory(currentDir)
-                    }
+                    file.renameTo(target) -> { status.text = "تمت إعادة التسمية."; loadDirectory(currentDir) }
                     else -> { status.text = "تعذرت إعادة التسمية." }
                 }
             }.setNegativeButton("إلغاء", null).show()
@@ -1114,7 +1317,6 @@ class MainActivity : Activity() {
                     var failed = 0
                     for (file in files) if (!file.deleteRecursively()) failed++
                     runOnUiThread {
-                        forgetDeletedArchives(files.filter { !it.exists() })
                         status.text = if (failed == 0) "تم الحذف." else "تعذر حذف $failed عنصر."
                         loadDirectory(currentDir)
                     }
@@ -1169,45 +1371,44 @@ class MainActivity : Activity() {
 
     // ───────────────────────────── Create archive / protect with password ─────────────────────────────
 
-    private fun collectDirectoryPaths(sources: List<File>): List<String> {
-        val out = ArrayList<String>()
-        fun walk(dir: File, path: String, depth: Int) {
-            if (out.size >= 40) return
-            out.add(path)
-            if (depth >= 3) return
-            val children = dir.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase(Locale.ROOT) } ?: return
-            for (child in children) walk(child, "$path/${child.name}", depth + 1)
-        }
-        for (source in sources) if (source.isDirectory) walk(source, source.name, 0)
-        return out
-    }
-
-    private fun promptFolderLock(path: String, locks: MutableMap<String, String>, onChanged: () -> Unit) {
+    private fun promptFolderLock(path: String, isFile: Boolean, locks: MutableMap<String, String>, onChanged: () -> Unit) {
         val existing = locks.containsKey(path)
-        val first = dialogField("كلمة مرور المجلد (10 أحرف على الأقل)")
+        val kindWord = if (isFile) "الملف" else "المجلد"
+        val first = dialogField("كلمة مرور $kindWord (10 أحرف على الأقل)")
         val second = dialogField("تأكيد كلمة المرور")
+        val reveal = CheckBox(this).apply {
+            text = "إظهار كلمة المرور"
+            setOnCheckedChangeListener { _, shown ->
+                val method = if (shown) null else android.text.method.PasswordTransformationMethod.getInstance()
+                first.transformationMethod = method
+                second.transformationMethod = method
+            }
+        }
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(2))
-            addView(first); addView(second)
+            addView(first); addView(second); addView(reveal)
         }
         val builder = AlertDialog.Builder(this)
-            .setTitle("كلمة مرور المجلد: ${path.substringAfterLast('/')}")
-            .setMessage("كلمة مرور مستقلة لهذا المجلد فقط. لا يمكن قراءة ملفاته أو فحصها أو استخراجها بدونها، حتى مع كلمة مرور الأرشيف.")
+            .setTitle("كلمة مرور $kindWord: ${path.substringAfterLast('/')}")
+            .setMessage(
+                if (isFile) "كلمة مرور مستقلة لهذا الملف فقط. لا يمكن قراءته أو فحصه أو استخراجه بدونها، حتى مع كلمة مرور الأرشيف."
+                else "كلمة مرور مستقلة لهذا المجلد وكل ما بداخله. لا يمكن قراءة ملفاته أو فحصها أو استخراجها بدونها، حتى مع كلمة مرور الأرشيف."
+            )
             .setView(panel)
-            .setPositiveButton("حماية المجلد") { _, _ ->
+            .setPositiveButton("تعيين القفل") { _, _ ->
                 val value = first.text.toString()
                 val confirmation = second.text.toString()
                 first.text?.clear(); second.text?.clear()
                 when {
-                    value.length < 10 -> { status.text = "كلمة مرور المجلد قصيرة؛ استخدم 10 أحرف على الأقل."; promptFolderLock(path, locks, onChanged) }
-                    value != confirmation -> { status.text = "كلمتا مرور المجلد غير متطابقتين."; promptFolderLock(path, locks, onChanged) }
-                    !existing && locks.size >= 32 -> { status.text = "الحد الأقصى 32 مجلدًا بكلمات مرور مستقلة في الأرشيف الواحد." }
+                    value.length < 10 -> { status.text = "كلمة المرور قصيرة؛ استخدم 10 أحرف على الأقل."; promptFolderLock(path, isFile, locks, onChanged) }
+                    value != confirmation -> { status.text = "كلمتا المرور غير متطابقتين."; promptFolderLock(path, isFile, locks, onChanged) }
+                    !existing && locks.size >= 32 -> { status.text = "الحد الأقصى 32 عنصرًا بكلمات مرور مستقلة في الأرشيف الواحد." }
                     else -> { locks[path] = value; onChanged() }
                 }
             }
             .setNegativeButton("إلغاء", null)
-        if (existing) builder.setNeutralButton("إزالة الحماية") { _, _ -> locks.remove(path); onChanged() }
+        if (existing) builder.setNeutralButton("إزالة القفل") { _, _ -> locks.remove(path); onChanged() }
         builder.show()
     }
 
@@ -1253,80 +1454,113 @@ class MainActivity : Activity() {
             textSize = 14f
             isChecked = protectPreset
             setTextColor(0xFFF4F7FF.toInt())
+            setOnCheckedChangeListener { button, checked ->
+                if (!checked && locks.isNotEmpty()) {
+                    // Folder passwords need the archive master password, so encryption stays on.
+                    status.text = "التشفير مطلوب ما دامت هناك مجلدات محمية. أزل حمايتها أولًا لإيقافه."
+                    button.isChecked = true
+                } else {
+                    fields.visibility = if (checked) View.VISIBLE else View.GONE
+                }
+            }
         }
         card.addView(toggle, LinearLayout.LayoutParams(-1, dp(44)))
         card.addView(fields, LinearLayout.LayoutParams(-1, -2))
 
         val lockSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val expandedNodes = HashSet<String>()
+        val childLimits = HashMap<String, Int>()
+        var lockPanelOpen = false
+        if (sources.size == 1 && sources[0].isDirectory) expandedNodes.add(sources[0].name)
+        fun lockedAncestor(path: String): String? = locks.keys.filter { path.startsWith("$it/") }.maxByOrNull { it.length }
         fun renderLocks() {
             lockSection.removeAllViews()
-            val directories = collectDirectoryPaths(sources)
-            if (directories.isEmpty()) return
-            lockSection.addView(label("كلمة مرور مستقلة لمجلدات معيّنة (اختياري)", 12f, 0xFFB9D0F7.toInt(), true).apply { setPadding(0, dp(10), 0, dp(4)) })
-            for (path in directories) {
-                val locked = locks.containsKey(path)
+            val caption = if (lockPanelOpen) "إخفاء القفل المستقل"
+                else "قفل مستقل لملفات أو مجلدات معيّنة" + if (locks.isEmpty()) "" else " (${locks.size})"
+            lockSection.addView(actionButton("lock", caption, false) { lockPanelOpen = !lockPanelOpen; renderLocks() },
+                LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(8) })
+            if (!lockPanelOpen) return
+            lockSection.addView(label("اضغط القفل بجانب أي ملف أو مجلد لتعيين كلمة مرور خاصة به. قفل المجلد يشمل كل ما بداخله.", 11f, 0xFF8FA6C9.toInt(), false)
+                .apply { setPadding(dp(2), dp(6), dp(2), dp(6)) })
+            fun addNode(file: File, path: String, depth: Int) {
+                val directory = file.isDirectory
+                val own = locks.containsKey(path)
+                val ancestor = lockedAncestor(path)
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     layoutDirection = View.LAYOUT_DIRECTION_RTL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPaddingRelative(dp(8) + dp(10) * path.count { it == '/' }, 0, dp(4), 0)
+                    setPaddingRelative(dp(6) + dp(14) * minOf(depth, 8), 0, dp(4), 0)
                     background = rounded(0xFF1D3152.toInt(), 10)
+                    if (directory) {
+                        isClickable = true
+                        isFocusable = true
+                        setOnClickListener { if (!expandedNodes.remove(path)) expandedNodes.add(path); renderLocks() }
+                    }
                 }
-                row.addView(QamzorLineIconView(this, "folder", 0xFFFFC857.toInt()), LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(8) })
-                row.addView(label(path.substringAfterLast('/'), 12.5f, 0xFFF4F7FF.toInt(), false).apply {
-                    maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setSingleLine(true)
-                }, LinearLayout.LayoutParams(0, -2, 1f))
-                val lockButton = iconBadge(if (locked) "lock" else "unlock", if (locked) 0x44FFD27A else 0x334B73AA,
-                    if (locked) 0xFFFFD27A.toInt() else 0xFFBBD2FF.toInt(), 32).apply {
+                if (directory) {
+                    row.addView(QamzorLineIconView(this, if (path in expandedNodes) "minus" else "plus", 0xFF9FB4D3.toInt()),
+                        LinearLayout.LayoutParams(dp(16), dp(16)).apply { marginEnd = dp(6) })
+                } else {
+                    row.addView(View(this), LinearLayout.LayoutParams(dp(16), dp(16)).apply { marginEnd = dp(6) })
+                }
+                val kind = if (directory) "folder" else typeStyle(file).first
+                val kindTint = if (directory) 0xFFFFC857.toInt() else 0xFFBBD2FF.toInt()
+                row.addView(QamzorLineIconView(this, kind, kindTint), LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(8) })
+                val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                texts.addView(label(file.name, 12.5f, 0xFFF4F7FF.toInt(), false).apply {
+                    maxLines = 1; ellipsize = TextUtils.TruncateAt.MIDDLE; setSingleLine(true)
+                })
+                val note = when {
+                    own -> "كلمة مرور مستقلة"
+                    ancestor != null -> "يتبع قفل «${ancestor.substringAfterLast('/')}»"
+                    else -> ""
+                }
+                if (note.isNotEmpty()) texts.addView(label(note, 10f, if (own) 0xFFFFD27A.toInt() else 0xFF8FA6C9.toInt(), false).apply { maxLines = 1 })
+                row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+                val lockButton = iconBadge(if (own || ancestor != null) "lock" else "unlock",
+                    if (own) 0x44FFD27A else 0x334B73AA,
+                    if (own) 0xFFFFD27A.toInt() else 0xFFBBD2FF.toInt(), 32).apply {
                     isClickable = true
                     isFocusable = true
-                    contentDescription = "كلمة مرور مستقلة للمجلد $path"
+                    contentDescription = "كلمة مرور مستقلة لـ $path"
                     setOnClickListener {
-                        promptFolderLock(path, locks) {
+                        promptFolderLock(path, !directory, locks) {
                             if (locks.isNotEmpty()) toggle.isChecked = true
                             renderLocks()
                         }
                     }
                 }
                 row.addView(lockButton, LinearLayout.LayoutParams(dp(32), dp(32)))
-                lockSection.addView(row, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(4) })
+                lockSection.addView(row, LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(4) })
+                if (directory && path in expandedNodes) {
+                    val children = try {
+                        file.listFiles()?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) }))
+                    } catch (_: Exception) { null } ?: emptyList()
+                    val limit = childLimits[path] ?: 100
+                    for (child in children.take(limit)) addNode(child, "$path/${child.name}", depth + 1)
+                    if (children.size > limit) {
+                        lockSection.addView(actionButton("plus", "عرض المزيد (${children.size - limit})", false) {
+                            childLimits[path] = limit + 200
+                            renderLocks()
+                        }, LinearLayout.LayoutParams(-1, dp(38)).apply { bottomMargin = dp(4) })
+                    }
+                }
             }
+            for (source in sources) addNode(source, source.name, 0)
         }
         renderLocks()
         card.addView(lockSection, LinearLayout.LayoutParams(-1, -2))
 
-        val protectNote = label(
-            "الحماية الفعلية: سيتم تشفير المحتوى بكلمة المرور، والتحقق من الأرشيف، ثم إزالة النسخة الأصلية من مكانها. سيبقى ملف QZRA المشفّر فقط؛ لذلك لن يفتح الملف أو المجلد الأصلي دون كلمة مرور لأنه لن يبقى كنسخة مكشوفة.",
-            11.5f, 0xFFFFD27A.toInt(), false
-        ).apply {
-            visibility = View.GONE
-            setPadding(dp(2), dp(8), dp(2), dp(4))
-        }
-        card.addView(protectNote)
-        val deleteWarning = label("سيُحذف الأصل بعد نجاح الإنشاء والتحقق. هذا الخيار غير مشفّر بحد ذاته؛ استخدم «حماية بكلمة مرور» لتشفير المحتوى.",
-            11f, 0xFFFFB6B6.toInt(), false)
+        val deleteWarning = label("سيُحذف الأصل نهائيًا بعد نجاح الإنشاء والتحقق، ويبقى الأرشيف فقط.", 11f, 0xFFFFB6B6.toInt(), false)
             .apply { visibility = View.GONE; setPadding(dp(2), 0, dp(2), dp(2)) }
         val deleteBox = CheckBox(this).apply {
-            text = "حذف الأصل بعد إنشاء أرشيف عادي"
+            text = "حذف الأصل بعد الأرشفة (استبداله بالأرشيف)"
             textSize = 12.5f
             setTextColor(0xFFD8E5F8.toInt())
             buttonTintList = ColorStateList.valueOf(0xFFFF8A8A.toInt())
             setOnCheckedChangeListener { _, checked -> deleteWarning.visibility = if (checked) View.VISIBLE else View.GONE }
         }
-        fun updateProtectionOptions() {
-            val protected = toggle.isChecked || locks.isNotEmpty()
-            protectNote.visibility = if (protected) View.VISIBLE else View.GONE
-            deleteBox.visibility = if (protected) View.GONE else View.VISIBLE
-            if (protected) {
-                deleteBox.isChecked = false
-                deleteWarning.visibility = View.GONE
-            }
-        }
-        toggle.setOnCheckedChangeListener { _, checked ->
-            fields.visibility = if (checked) View.VISIBLE else View.GONE
-            updateProtectionOptions()
-        }
-        updateProtectionOptions()
         card.addView(deleteBox, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         card.addView(deleteWarning)
 
@@ -1349,7 +1583,7 @@ class MainActivity : Activity() {
             }
             val output = uniqueFile(currentDir, "$rawName.qzra")
             val hide = protect && (hideNames.isChecked || locks.isNotEmpty())
-            val removeOriginals = protect || deleteBox.isChecked
+            val removeOriginals = deleteBox.isChecked
             password.text?.clear(); confirm.text?.clear()
             dialog.dismiss()
             createArchiveFromFiles(sources, output, secret, hide, LinkedHashMap(locks), removeOriginals)
@@ -1371,9 +1605,6 @@ class MainActivity : Activity() {
         sources: List<File>, output: File, password: String?, encryptMetadata: Boolean,
         locks: Map<String, String>, deleteOriginals: Boolean
     ) {
-        val sourcesWithKinds = sources.map { source ->
-            source to if (source.isDirectory) "folders" else "files"
-        }
         status.text = "جارٍ إنشاء ${output.name}…"
         runOnWorker("فشل إنشاء أرشيف QZRA") {
             try {
@@ -1386,28 +1617,14 @@ class MainActivity : Activity() {
                 )
                 val verified = ArchiveEngine.verify(output, password, locks)
                 require(verified.valid && verified.filesChecked == result.files) { "تعذر التحقق من الأرشيف بعد الإنشاء" }
-                val failedDeletions = ArrayList<String>()
                 var removed = 0
-                if (deleteOriginals) {
-                    for (source in sources) {
-                        val deleted = try { source.deleteRecursively() } catch (_: Exception) { false }
-                        if (deleted && !source.exists()) removed++ else failedDeletions.add(source.name)
-                    }
-                }
+                if (deleteOriginals) for (source in sources) if (source.deleteRecursively()) removed++
                 runOnUiThread {
-                    registerArchiveSources(output, sourcesWithKinds)
+                    status.text = "تم إنشاء ${output.name} ✓ (${verified.version}) • الملفات: ${result.files} • " +
+                        "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
+                        (if (locks.isNotEmpty()) " • عناصر محمية: ${locks.size}" else "") +
+                        (if (deleteOriginals) " • حُذف الأصل ($removed)" else "")
                     loadDirectory(currentDir)
-                    status.text = if (failedDeletions.isEmpty()) {
-                        "تم إنشاء ${output.name} والتحقق منه ✓ (${verified.version}) • الملفات: ${result.files} • " +
-                            "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
-                            (if (locks.isNotEmpty()) " • مجلدات محمية: ${locks.size}" else "") +
-                            (if (deleteOriginals) " • أزيل الأصل بعد التحقق ($removed)" else "") +
-                            " • أُضيف إلى مكتبة الأرشيف"
-                    } else {
-                        "تم إنشاء النسخة المشفّرة والتحقق منها، لكن تعذرت إزالة بعض النسخ الأصلية: " +
-                            failedDeletions.joinToString("، ") +
-                            ". هذه النسخ ما زالت غير محمية بكلمة المرور؛ احذفها يدويًا بعد التأكد من وجود ملف QZRA."
-                    }
                 }
             } catch (error: Exception) {
                 try { output.delete() } catch (_: Exception) { /* best effort */ }
@@ -1420,49 +1637,14 @@ class MainActivity : Activity() {
 
     private fun buildOpenPage(): View {
         val column = pageColumn()
-
-        archiveTabsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        archiveFilesTabButton = label("الملفات المؤرشفة", 12.5f, 0xFFFFFFFF.toInt(), true).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(10), dp(8), dp(10))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                archiveLibraryTab = "files"
-                renderArchiveLibrary()
-            }
-        }
-        archiveFoldersTabButton = label("المجلدات المؤرشفة", 12.5f, 0xFFBBD2FF.toInt(), false).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(10), dp(8), dp(10))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                archiveLibraryTab = "folders"
-                renderArchiveLibrary()
-            }
-        }
-        archiveTabsRow.addView(archiveFilesTabButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
-        archiveTabsRow.addView(archiveFoldersTabButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
-        column.addView(archiveTabsRow, LinearLayout.LayoutParams(-1, dp(48)))
-
-        archiveActionsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            visibility = View.GONE
-        }
-        archiveActionsRow.addView(actionButton("extract", "استخراج", true) { extractOpenedArchive() },
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        row.addView(actionButton("extract", "استخراج", true) { extractOpenedArchive() },
             LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
-        archiveActionsRow.addView(actionButton("shield_check", "فحص", false) { verifyOpenedArchive() },
+        row.addView(actionButton("shield_check", "فحص", false) { verifyOpenedArchive() },
             LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
-        archiveActionsRow.addView(actionButton("archive", "المكتبة", false) { closeOpenedArchive() },
+        row.addView(actionButton("close", "إغلاق", false) { closeOpenedArchive() },
             LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
-        column.addView(archiveActionsRow, LinearLayout.LayoutParams(-1, dp(48)))
-
+        column.addView(row)
         archiveInfoText = label("", 14f, 0xFFF4F7FF.toInt(), true).apply { setPadding(dp(2), dp(14), dp(2), dp(0)) }
         explorerPathText = label("", 11f, 0xFF9FB4D3.toInt(), false).apply { setPadding(dp(2), dp(2), dp(2), dp(8)) }
         column.addView(archiveInfoText)
@@ -1472,227 +1654,161 @@ class MainActivity : Activity() {
         return pageScroll(column)
     }
 
-    private fun archiveLibraryPreferences() =
-        getSharedPreferences("qamzor-archive-library", Context.MODE_PRIVATE)
+    private fun renderEmptyExplorer() {
+        explorerContainer.removeAllViews()
+        archiveInfoText.text = "لا يوجد أرشيف مفتوح"
+        explorerPathText.text = ""
+        explorerContainer.addView(label("اضغط على أي ملف .qzra في تبويب «الملفات» لفتحه هنا. الأرشيفات المحمية لا يقرأها أي تطبيق آخر.", 12.5f, 0xFF9FB4D3.toInt(), false)
+            .apply { setPadding(dp(4), dp(10), dp(4), dp(10)) })
+        explorerContainer.addView(actionButton("folder_search", "فتح عبر منتقي النظام", false) { pickArchive(REQUEST_BROWSE) },
+            LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(8) })
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        archiveLibraryBox = box
+        explorerContainer.addView(box, LinearLayout.LayoutParams(-1, -2))
+        renderArchiveLibrary()
+        refreshArchiveLibrary(true)
+    }
 
-    private fun restoreArchiveLibrary() {
-        val raw = archiveLibraryPreferences().getString("entries", "").orEmpty()
-        if (raw.isBlank()) return
-        try {
-            val array = org.json.JSONArray(raw)
-            for (index in 0 until array.length()) {
-                val item = array.optJSONObject(index) ?: continue
-                val id = item.optString("id")
-                val archivePath = item.optString("archivePath")
-                val originalName = item.optString("originalName")
-                val kind = item.optString("kind")
-                if (id.isNotBlank() && archivePath.isNotBlank() && originalName.isNotBlank() &&
-                    (kind == "files" || kind == "folders")) {
-                    archiveLibraryEntries.add(
-                        ArchiveLibraryEntry(id, archivePath, originalName, kind, item.optLong("createdAt"))
-                    )
+    // ───────────────────────────── Archive tab: archives found in phone storage ─────────────────────────────
+
+    private fun refreshArchiveLibrary(force: Boolean) {
+        if (openedArchive != null) return
+        if (!hasStorageAccess()) {
+            renderArchiveLibrary()
+            return
+        }
+        if (!force && archiveScanDone && System.currentTimeMillis() - archiveScanTime < 10_000L) return
+        scanArchives()
+    }
+
+    private fun scanArchives() {
+        if (archiveScanning || !hasStorageAccess()) return
+        archiveScanning = true
+        renderArchiveLibrary()
+        Thread {
+            val found = ArrayList<File>()
+            val meta = HashMap<File, LongArray>()
+            var capped = false
+            try {
+                for (volume in storageVolumes()) walkForArchives(volume.second, 0, found)
+                capped = found.size >= MAX_ARCHIVE_SCAN
+            } catch (_: Exception) { /* partial results are still useful */ }
+            val ordered = try {
+                val unique = found.distinctBy { it.absolutePath }
+                for (file in unique) meta[file] = longArrayOf(file.lastModified(), file.length(), archiveLockLevel(file))
+                unique.sortedByDescending { meta[it]?.get(0) ?: 0L }
+            } catch (_: Exception) { found.toList() }
+            runOnUiThread {
+                archiveScanning = false
+                if (!isFinishing) {
+                    archiveScanResults = ordered
+                    archiveScanMeta.clear()
+                    archiveScanMeta.putAll(meta)
+                    archiveScanCapped = capped
+                    archiveScanDone = true
+                    archiveScanTime = System.currentTimeMillis()
+                    renderArchiveLibrary()
                 }
             }
-        } catch (_: Exception) {
-            archiveLibraryEntries.clear()
+        }.start()
+    }
+
+    private fun walkForArchives(dir: File, depth: Int, out: MutableList<File>) {
+        if (depth > 12 || out.size >= MAX_ARCHIVE_SCAN) return
+        val children = try { dir.listFiles() } catch (_: Exception) { null } ?: return
+        for (child in children) {
+            if (out.size >= MAX_ARCHIVE_SCAN) return
+            if (child.name.startsWith(".")) continue
+            if (child.isDirectory) {
+                // Android/ holds other apps' private data, which cannot hold user archives.
+                if (depth == 0 && child.name == "Android") continue
+                walkForArchives(child, depth + 1, out)
+            } else if (isQzra(child)) {
+                out.add(child)
+            }
         }
     }
 
-    private fun persistArchiveLibrary() {
-        val array = org.json.JSONArray()
-        for (entry in archiveLibraryEntries) {
-            array.put(org.json.JSONObject().apply {
-                put("id", entry.id)
-                put("archivePath", entry.archivePath)
-                put("originalName", entry.originalName)
-                put("kind", entry.kind)
-                put("createdAt", entry.createdAt)
-            })
+    private fun libraryFolderLabel(dir: File, volumes: List<Pair<String, File>>): String {
+        val full = dir.absolutePath
+        for ((name, root) in volumes) {
+            val base = root.absolutePath
+            if (full == base) return name
+            if (full.startsWith("$base/")) return name + full.removePrefix(base)
         }
-        archiveLibraryPreferences().edit().putString("entries", array.toString()).apply()
+        return full
     }
 
-    /** One library card is stored for every source, even when several sources share one QZRA file. */
-    private fun registerArchiveSources(archive: File, sources: List<Pair<File, String>>) {
-        val createdAt = System.currentTimeMillis()
-        for ((index, source) in sources.withIndex()) {
-            val id = "$createdAt-$index-${archive.name}"
-            archiveLibraryEntries.removeAll { it.id == id }
-            archiveLibraryEntries.add(
-                ArchiveLibraryEntry(id, archive.absolutePath, source.first.name, source.second, createdAt)
-            )
-        }
-        persistArchiveLibrary()
-        renderArchiveLibrary()
-    }
-
-    private fun renderArchiveTabs() {
-        val filesSelected = archiveLibraryTab == "files"
-        archiveFilesTabButton.setTextColor(if (filesSelected) 0xFFFFFFFF.toInt() else 0xFFBBD2FF.toInt())
-        archiveFilesTabButton.setTypeface(null, if (filesSelected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-        archiveFilesTabButton.background = rounded(if (filesSelected) 0xFF315AA0.toInt() else 0xFF1D3152.toInt(), 11)
-        archiveFoldersTabButton.setTextColor(if (!filesSelected) 0xFFFFFFFF.toInt() else 0xFFBBD2FF.toInt())
-        archiveFoldersTabButton.setTypeface(null, if (!filesSelected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-        archiveFoldersTabButton.background = rounded(if (!filesSelected) 0xFF315AA0.toInt() else 0xFF1D3152.toInt(), 11)
+    private fun showFolderInFiles(dir: File, volumes: List<Pair<String, File>>) {
+        val full = dir.absolutePath
+        val root = volumes.map { it.second }.firstOrNull { full == it.absolutePath || full.startsWith(it.absolutePath + "/") }
+        if (root != null) browseRoot = root
+        selectTab(0)
+        loadDirectory(dir)
     }
 
     private fun renderArchiveLibrary() {
-        if (!::explorerContainer.isInitialized || !::archiveTabsRow.isInitialized) return
-        archiveTabsRow.visibility = View.VISIBLE
-        archiveActionsRow.visibility = View.GONE
-        renderArchiveTabs()
-        explorerContainer.removeAllViews()
-
-        val selectedKind = archiveLibraryTab
-        val entries = archiveLibraryEntries
-            .filter { it.kind == selectedKind }
-            .sortedByDescending { it.createdAt }
-        val title = if (selectedKind == "files") "الملفات المؤرشفة" else "المجلدات المؤرشفة"
-        val available = entries.count { File(it.archivePath).isFile }
-        archiveInfoText.text = "$title • ${entries.size} عنصر"
-        explorerPathText.text = "المحفوظات ثابتة هنا حتى بعد الخروج من القسم أو إغلاق التطبيق • المتاح: $available"
-
-        if (entries.isEmpty()) {
-            val emptyIcon = if (selectedKind == "files") "file" else "folder"
-            explorerContainer.addView(iconBadge(emptyIcon, 0x334C8DFF, 0xFF8FB4FF.toInt(), 62),
-                LinearLayout.LayoutParams(dp(62), dp(62)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(24) })
-            explorerContainer.addView(
-                label(if (selectedKind == "files") "لا توجد ملفات مؤرشفة بعد" else "لا توجد مجلدات مؤرشفة بعد",
-                    14f, 0xFFE7EFFD.toInt(), true).apply {
-                    gravity = Gravity.CENTER
-                    setPadding(dp(4), dp(12), dp(4), dp(6))
-                }
-            )
-            explorerContainer.addView(
-                label("بعد إنشاء أرشيف لأي ملف أو مجلد، سيظهر هنا تلقائيًا في القسم المناسب، ولن يختفي عند التنقل.",
-                    11.5f, 0xFF9FB4D3.toInt(), false).apply {
-                    gravity = Gravity.CENTER
-                    setPadding(dp(12), dp(2), dp(12), dp(12))
-                }
-            )
-            return
-        }
-
-        for (entry in entries) {
-            explorerContainer.addView(archiveLibraryRow(entry),
-                LinearLayout.LayoutParams(-1, dp(68)).apply { bottomMargin = dp(7) })
-        }
-    }
-
-    private fun archiveLibraryRow(entry: ArchiveLibraryEntry): View {
-        val archive = File(entry.archivePath)
-        val exists = archive.isFile
-        val row = LinearLayout(this).apply {
+        val box = archiveLibraryBox ?: return
+        if (openedArchive != null) return
+        box.removeAllViews()
+        val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
             gravity = Gravity.CENTER_VERTICAL
-            setPaddingRelative(dp(10), dp(5), dp(6), dp(5))
-            background = rounded(0xFF14223F.toInt(), 14)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                if (exists) openArchiveFile(archive, archive.name, false)
-                else status.text = "ملف الأرشيف الأصلي غير موجود: ${entry.archivePath}"
-            }
-            setOnLongClickListener {
-                showArchiveLibraryActions(entry)
-                true
-            }
+            setPadding(dp(2), dp(18), dp(2), dp(6))
         }
-        val folderEntry = entry.kind == "folders"
-        row.addView(
-            iconBadge(if (folderEntry) "folder" else "file",
-                if (folderEntry) 0x33FFC857 else 0x334B73AA,
-                if (folderEntry) 0xFFFFC857.toInt() else 0xFFBBD2FF.toInt(), 42),
-            LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(10) }
-        )
-        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        texts.addView(label(entry.originalName, 13.5f, 0xFFF4F7FF.toInt(), true).apply {
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.MIDDLE
-            setSingleLine(true)
-        })
-        val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM)
-            .format(java.util.Date(entry.createdAt))
-        val detail = if (exists) {
-            "${archive.name} • ${formatBytes(archive.length())} • $date"
-        } else {
-            "ملف الأرشيف غير موجود في مكانه الأصلي • $date"
+        header.addView(label("الأرشيفات في هاتفك", 13f, 0xFFB9D0F7.toInt(), true), LinearLayout.LayoutParams(0, -2, 1f))
+        if (archiveScanResults.isNotEmpty()) {
+            header.addView(label("${archiveScanResults.size}", 11f, 0xFF7F95BA.toInt(), false),
+                LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(4) })
         }
-        texts.addView(label(detail, 9.5f, if (exists) 0xFF9FB4D3.toInt() else 0xFFFFB6B6.toInt(), false).apply {
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setSingleLine(true)
-        })
-        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(toolbarButton("more", "خيارات ${entry.originalName}", 0xFF9FB4D3.toInt()) {
-            showArchiveLibraryActions(entry)
-        }, LinearLayout.LayoutParams(dp(34), dp(42)))
-        return row
-    }
+        header.addView(toolbarButton("convert", "إعادة البحث عن الأرشيفات", 0xFFBBD2FF.toInt()) { scanArchives() },
+            LinearLayout.LayoutParams(dp(38), dp(34)))
+        box.addView(header)
 
-    private fun showArchiveLibraryActions(entry: ArchiveLibraryEntry) {
-        val archive = File(entry.archivePath)
-        val actions = ArrayList<SheetAction>()
-        if (archive.isFile) {
-            actions += SheetAction("folder_search", "فتح واستعراض الأرشيف", false) {
-                openArchiveFile(archive, archive.name, false)
-            }
-            actions += SheetAction("extract", "استخراج الأرشيف إلى مجلد جديد", false) { quickExtract(archive) }
-        }
-        actions += SheetAction("close", "إزالة العنصر من القائمة فقط", false) {
-            archiveLibraryEntries.removeAll { it.id == entry.id }
-            persistArchiveLibrary()
-            renderArchiveLibrary()
-            status.text = "تمت إزالة العنصر من قائمة المحفوظات دون حذف ملف الأرشيف."
-        }
-        if (archive.isFile) {
-            actions += SheetAction("trash", "حذف ملف الأرشيف وكل سجلاته", true) {
-                AlertDialog.Builder(this)
-                    .setTitle("حذف الأرشيف نهائيًا")
-                    .setMessage("سيتم حذف ${archive.name} من الهاتف وإزالة كل العناصر المرتبطة به من قائمة المحفوظات.")
-                    .setPositiveButton("حذف نهائيًا") { _, _ ->
-                        if (archive.delete() || !archive.exists()) {
-                            archiveLibraryEntries.removeAll { it.archivePath == entry.archivePath }
-                            persistArchiveLibrary()
-                            renderArchiveLibrary()
-                            status.text = "تم حذف الأرشيف وإزالة سجلاته."
-                        } else {
-                            status.text = "تعذر حذف ملف الأرشيف من الهاتف."
-                        }
-                    }
-                    .setNegativeButton("إلغاء", null)
-                    .show()
-            }
-        }
-        showSheet(entry.originalName, if (entry.kind == "folders") "مجلد مؤرشف" else "ملف مؤرشف", actions)
-    }
+        fun note(text: String) = box.addView(label(text, 12.5f, 0xFF9FB4D3.toInt(), false).apply { setPadding(dp(4), dp(6), dp(4), dp(10)) })
 
-    private fun updateArchiveLibraryPath(oldFile: File, newFile: File) {
-        var changed = false
-        for (index in archiveLibraryEntries.indices) {
-            if (archiveLibraryEntries[index].archivePath == oldFile.absolutePath) {
-                archiveLibraryEntries[index] = archiveLibraryEntries[index].copy(archivePath = newFile.absolutePath)
-                changed = true
+        if (!hasStorageAccess()) {
+            note("امنح إذن الوصول إلى الملفات من تبويب «الملفات» لتظهر هنا الأرشيفات والمجلدات التي أرشفتها.")
+            return
+        }
+        if (archiveScanResults.isEmpty()) {
+            note(if (archiveScanning) "جارٍ البحث عن أرشيفات .qzra في الذاكرة…"
+                else "لم يتم العثور على أي أرشيف .qzra في الذاكرة. أنشئ أرشيفًا من تبويب «الملفات» وسيظهر هنا.")
+            return
+        }
+        if (archiveScanning) note("جارٍ تحديث القائمة…")
+
+        val volumes = storageVolumes()
+        val groups = LinkedHashMap<File, MutableList<File>>()
+        for (file in archiveScanResults) {
+            val parent = file.parentFile ?: continue
+            groups.getOrPut(parent) { ArrayList() }.add(file)
+        }
+        val dateFormat = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM)
+        for ((parent, archives) in groups) {
+            box.addView(
+                explorerRow("folder", libraryFolderLabel(parent, volumes), "${archives.size} أرشيف", false, { showFolderInFiles(parent, volumes) }),
+                LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(6) })
+            for (file in archives) {
+                val info = archiveScanMeta[file]
+                val modified = info?.get(0) ?: 0L
+                val size = info?.get(1) ?: 0L
+                val level = info?.get(2) ?: 0L
+                val lockText = if (level >= 2L) "🔒 مشفّر + أسماء مخفية  •  " else if (level == 1L) "🔒 مشفّر  •  " else ""
+                val subtitle = "$lockText${formatBytes(size)}  •  ${dateFormat.format(java.util.Date(modified))}"
+                val row = explorerRow(if (level > 0L) "lock" else "archive", file.name, subtitle, level > 0L, { openArchiveFile(file, file.name, false) }, {
+                    showSheet(file.name, formatBytes(size), listOf(
+                        SheetAction("folder_search", "فتح الأرشيف", false) { openArchiveFile(file, file.name, false) },
+                        SheetAction("extract", "استخراج هنا", false) { quickExtract(file) },
+                        SheetAction("shield_check", "فحص السلامة", false) { verifyFile(file) },
+                        SheetAction("folder", "إظهار في مجلده", false) { showFolderInFiles(parent, volumes) }
+                    ))
+                })
+                box.addView(row, LinearLayout.LayoutParams(-1, dp(58)).apply { bottomMargin = dp(6); marginStart = dp(16) })
             }
         }
-        if (changed) {
-            persistArchiveLibrary()
-            renderArchiveLibrary()
-        }
-    }
-
-    private fun forgetDeletedArchives(files: List<File>) {
-        val paths = files.filter { it.name.endsWith(".qzra", ignoreCase = true) }.map { it.absolutePath }.toSet()
-        if (paths.isEmpty()) return
-        if (archiveLibraryEntries.removeAll { it.archivePath in paths }) {
-            persistArchiveLibrary()
-            renderArchiveLibrary()
-        }
-    }
-
-    private fun renderEmptyExplorer() {
-        renderArchiveLibrary()
+        if (archiveScanCapped) note("تم عرض أول $MAX_ARCHIVE_SCAN أرشيف فقط.")
     }
 
     private fun explorerRow(kind: String, title: String, subtitle: String, highlight: Boolean, onClick: () -> Unit, onLong: (() -> Unit)? = null): View {
@@ -1721,14 +1837,9 @@ class MainActivity : Activity() {
 
     private fun renderExplorer(path: String, children: List<ArchiveEngine.BrowseItem>) {
         explorerPath = path
-        archiveTabsRow.visibility = View.GONE
-        archiveActionsRow.visibility = View.VISIBLE
         explorerContainer.removeAllViews()
         archiveInfoText.text = openedArchiveLabel.ifEmpty { "أرشيف QZRA" }
-        val folderCount = children.count { it.type == "directory" }
-        val fileCount = children.size - folderCount
-        val itemSummary = "${children.size} عنصر • $folderCount مجلد • $fileCount ملف"
-        explorerPathText.text = if (path.isBlank()) "/  •  $itemSummary" else "/$path  •  $itemSummary"
+        explorerPathText.text = if (path.isBlank()) "/  •  ${children.size} عنصر" else "/$path  •  ${children.size} عنصر"
         if (path.isNotBlank()) {
             explorerContainer.addView(
                 explorerRow("up", "المجلد السابق", "", false, { showVirtualExplorer(path.substringBeforeLast('/', "")) }),
@@ -1739,19 +1850,19 @@ class MainActivity : Activity() {
         }
         for (item in children) {
             val isDirectory = item.type == "directory"
-            val protectedFolder = isDirectory && openedProtected.contains(item.path)
+            val protectedFolder = openedProtected.contains(item.path)
             val unlocked = protectedFolder && openedFolderPasswords.containsKey(item.path)
             val icon = when {
-                !isDirectory -> "file"
                 protectedFolder && unlocked -> "unlock"
                 protectedFolder -> "lock"
-                else -> "folder"
+                isDirectory -> "folder"
+                else -> "file"
             }
+            val lockNote = if (!protectedFolder) "" else if (unlocked) "محمي بكلمة مرور مستقلة — مفتوح" else "محمي بكلمة مرور مستقلة"
             val subtitle = when {
-                !isDirectory -> formatBytes(item.size)
-                protectedFolder && unlocked -> "محمي بكلمة مرور مستقلة — مفتوح"
-                protectedFolder -> "محمي بكلمة مرور مستقلة"
-                else -> "مجلد"
+                isDirectory -> lockNote.ifEmpty { "مجلد" }
+                protectedFolder -> "$lockNote  •  ${formatBytes(item.size)}"
+                else -> formatBytes(item.size)
             }
             val row = if (isDirectory) {
                 explorerRow(icon, item.name, subtitle, protectedFolder && !unlocked, { enterFolder(item.path) }, {
@@ -1761,17 +1872,32 @@ class MainActivity : Activity() {
                     ))
                 })
             } else {
-                explorerRow(icon, item.name, subtitle, false, { showFileActions(item.path, item.size) }, { showFileActions(item.path, item.size) })
+                explorerRow(icon, item.name, subtitle, protectedFolder && !unlocked, { openFileEntry(item.path, item.size) }, { openFileEntry(item.path, item.size) })
             }
             explorerContainer.addView(row, LinearLayout.LayoutParams(-1, dp(58)).apply { bottomMargin = dp(6) })
+        }
+    }
+
+    /** A file with its own password asks for it before any action; unlocked files act immediately. */
+    private fun openFileEntry(path: String, size: Long) {
+        val archive = openedArchive ?: return
+        val locked = openedProtected.filter { path == it || path.startsWith("$it/") }
+            .sortedBy { it.length }.firstOrNull { !openedFolderPasswords.containsKey(it) }
+        if (locked == null) {
+            showFileActions(path, size)
+        } else {
+            promptFolderPassword(locked, archive, openedArchivePassword) {
+                runOnUiThread { showVirtualExplorer(explorerPath); showFileActions(path, size) }
+            }
         }
     }
 
     /** Entering a protected folder asks for that folder's own password first. */
     private fun enterFolder(path: String) {
         val archive = openedArchive ?: return
-        val scope = openedProtected.filter { path == it || path.startsWith("$it/") }.maxByOrNull { it.length }
-        if (scope != null && !openedFolderPasswords.containsKey(scope)) {
+        val scope = openedProtected.filter { path == it || path.startsWith("$it/") }
+            .sortedBy { it.length }.firstOrNull { !openedFolderPasswords.containsKey(it) }
+        if (scope != null) {
             promptFolderPassword(scope, archive, openedArchivePassword) { showVirtualExplorer(path) }
         } else {
             showVirtualExplorer(path)
@@ -1781,8 +1907,16 @@ class MainActivity : Activity() {
     private fun showVirtualExplorer(path: String) {
         val archive = openedArchive ?: return
         runOnWorker("تعذر قراءة مجلد الأرشيف") {
-            val folderPasswords = synchronized(openedFolderPasswords) { openedFolderPasswords.toMap() }
-            val children = ArchiveEngine.browse(archive, path, openedArchivePassword, folderPasswords)
+            val children = try {
+                ArchiveEngine.browse(archive, path, openedArchivePassword, LinkedHashMap(openedFolderPasswords))
+            } catch (error: IllegalStateException) {
+                val lockedPath = lockedFolderPath(error.message.orEmpty())
+                if (lockedPath != null) {
+                    runOnUiThread { promptFolderPassword(lockedPath, archive, openedArchivePassword) { showVirtualExplorer(path) } }
+                    return@runOnWorker
+                }
+                throw error
+            }
             runOnUiThread { renderExplorer(path, children) }
         }
     }
@@ -1805,8 +1939,8 @@ class MainActivity : Activity() {
         openedProtected = emptySet()
         openedFolderPasswords.clear()
         explorerPath = ""
-        renderArchiveLibrary()
-        status.text = "تم إغلاق الأرشيف والعودة إلى مكتبة المحفوظات."
+        renderEmptyExplorer()
+        status.text = "تم إغلاق الأرشيف ومسح كلمات المرور من الذاكرة."
     }
 
     private fun extractOpenedArchive() {
@@ -1907,7 +2041,7 @@ class MainActivity : Activity() {
                             installOpenedArchive(archive, name, password, protectedPaths, temp)
                             runOnUiThread {
                                 status.text = "تمت مصادقة الأرشيف المشفّر ✓" +
-                                    if (protectedPaths.isEmpty()) "" else " • مجلدات محمية: ${protectedPaths.size}"
+                                    if (protectedPaths.isEmpty()) "" else " • عناصر محمية: ${protectedPaths.size}"
                                 if (afterAuthenticated != null) afterAuthenticated() else { selectTab(1); showVirtualExplorer("") }
                             }
                         } catch (error: Exception) {
@@ -1992,7 +2126,6 @@ class MainActivity : Activity() {
     }
 
     private fun verifyFile(file: File) {
-        if (file != openedArchive) openedFolderPasswords.clear()
         resetVerificationMetrics()
         runOnWorker("فشل فحص الأرشيف") {
             try {
@@ -2080,13 +2213,20 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun verifyArchiveFile(archive: File, password: String?) {
+    private fun verifyArchiveFile(
+        archive: File, password: String?,
+        folderPasswords: MutableMap<String, String> = if (archive == openedArchive) openedFolderPasswords else LinkedHashMap()
+    ) {
         val result = try {
-            ArchiveEngine.verify(archive, password, openedFolderPasswords)
+            ArchiveEngine.verify(archive, password, folderPasswords)
         } catch (error: Exception) {
             val lockedPath = lockedFolderPath(error.message.orEmpty())
             if (lockedPath != null) {
-                runOnUiThread { promptFolderPassword(lockedPath, archive, password) { runOnWorker("فشل فحص مجلد محمي") { verifyArchiveFile(archive, password) } } }
+                runOnUiThread {
+                    promptFolderPassword(lockedPath, archive, password, folderPasswords) {
+                        runOnWorker("فشل فحص مجلد محمي") { verifyArchiveFile(archive, password, folderPasswords) }
+                    }
+                }
                 return
             }
             throw error
@@ -2347,24 +2487,27 @@ class MainActivity : Activity() {
         Regex("Folder is locked; unlock it with its independent password: (.+)", RegexOption.IGNORE_CASE)
             .find(message)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
 
-    private fun promptFolderPassword(path: String, archive: File, masterPassword: String?, retry: () -> Unit) {
+    private fun promptFolderPassword(
+        path: String, archive: File, masterPassword: String?,
+        store: MutableMap<String, String> = openedFolderPasswords, retry: () -> Unit
+    ) {
         val field = EditText(this).apply {
-            hint = "كلمة مرور المجلد: $path"
+            hint = "كلمة المرور: $path"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             setPadding(dp(16), dp(10), dp(16), dp(10))
         }
         AlertDialog.Builder(this)
-            .setTitle("فتح مجلد محمي مستقل")
-            .setMessage("هذا المجلد له كلمة مرور مستقلة عن كلمة مرور الأرشيف. سيتم التحقق منها قبل حفظها في ذاكرة الجلسة.")
+            .setTitle("فتح عنصر محمي مستقل")
+            .setMessage("هذا الملف أو المجلد له كلمة مرور مستقلة عن كلمة مرور الأرشيف. سيتم التحقق منها قبل حفظها في ذاكرة الجلسة.")
             .setView(field)
-            .setPositiveButton("فتح المجلد") { _, _ ->
+            .setPositiveButton("فتح") { _, _ ->
                 val value = field.text.toString()
                 field.text?.clear()
                 if (value.isEmpty()) status.text = "أدخل كلمة مرور المجلد."
                 else runOnWorker("كلمة مرور المجلد غير صحيحة") {
                     // Authenticate the scope before caching its password for this archive session.
                     ArchiveEngine.list(archive, masterPassword, mapOf(path to value))
-                    openedFolderPasswords[path] = value
+                    store[path] = value
                     retry()
                 }
             }
@@ -2377,26 +2520,60 @@ class MainActivity : Activity() {
         try { contentResolver.takePersistableUriPermission(uri, flags) } catch (_: SecurityException) { /* Some providers grant transient access only. */ }
     }
 
+    /** Name of an operation for progress/success text. [runOnWorker]'s argument is a *failure* prefix and must never be shown as progress. */
+    private fun operationName(errorPrefix: String): String = when (errorPrefix) {
+        "فشل الحذف" -> "الحذف"
+        "فشل إنشاء أرشيف QZRA" -> "إنشاء أرشيف QZRA"
+        "تعذر قراءة مجلد الأرشيف" -> "قراءة مجلد الأرشيف"
+        "فشل فحص الأرشيف" -> "فحص الأرشيف"
+        "تعذر فتح الأرشيف" -> "فتح الأرشيف"
+        "تعذرت قراءة الأرشيف" -> "قراءة الأرشيف"
+        "تعذر فتح الأرشيف المشفّر" -> "فتح الأرشيف المشفّر"
+        "فشل استخراج الأرشيف" -> "استخراج الأرشيف"
+        "فشلت مقارنة الأرشيفين" -> "مقارنة الأرشيفين"
+        "فشل فحص الأرشيف المشفّر" -> "فحص الأرشيف المشفّر"
+        "فشل فحص مجلد محمي" -> "فحص مجلد محمي"
+        "تعذرت معاينة الملف" -> "معاينة الملف"
+        "كلمة مرور المجلد غير صحيحة" -> "فتح العنصر المحمي"
+        else -> "العملية"
+    }
+
     private fun runOnWorker(errorPrefix: String, block: () -> Unit) {
+        val name = operationName(errorPrefix)
         Thread {
             synchronized(backgroundTaskLock) {
                 backgroundBusy = true
-                activeOperationLabel = errorPrefix
+                activeOperationLabel = name
                 val startedAt = System.currentTimeMillis()
                 activeOperationStartedAt = startedAt
                 operationPreferences().edit()
                     .putInt("active_pid", android.os.Process.myPid())
-                    .putString("active_label", errorPrefix)
+                    .putString("active_label", name)
                     .putLong("active_started_at", startedAt)
                     .apply()
-                recordOperationEvent("[${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(startedAt))}] قيد التنفيذ — $errorPrefix")
-                runOnUiThread { status.text = "جارٍ التنفيذ: $errorPrefix" }
+                recordOperationEvent("[${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(startedAt))}] قيد التنفيذ — $name")
+                // Keep a more specific "جارٍ …" message the caller already set; otherwise show a neutral progress line.
+                runOnUiThread { if (!status.text.toString().startsWith("جارٍ")) status.text = "جارٍ التنفيذ: $name" }
+                // The outcome is decided ONLY by block(). Bookkeeping (log + status line) runs afterwards and can never
+                // turn a finished operation into a "failed" one.
+                try {
+                var failure: Throwable? = null
                 try {
                     block()
-                    recordOperationEvent("[${java.text.DateFormat.getDateTimeInstance().format(java.util.Date())}] اكتملت — $errorPrefix")
-                } catch (error: Exception) {
-                    recordOperationEvent("[${java.text.DateFormat.getDateTimeInstance().format(java.util.Date())}] فشلت — $errorPrefix: ${error.message ?: error.javaClass.simpleName}")
-                    runOnUiThread { status.text = "$errorPrefix: ${error.message ?: error.javaClass.simpleName}" }
+                } catch (error: Throwable) {
+                    failure = error
+                }
+                val stamp = try { java.text.DateFormat.getDateTimeInstance().format(java.util.Date()) } catch (_: Throwable) { "" }
+                val err = failure
+                if (err == null) {
+                    try { recordOperationEvent("[$stamp] اكتملت — $name") } catch (_: Throwable) { /* log only */ }
+                    // Replace a leftover progress line only; a result message set by the block is kept.
+                    runOnUiThread { if (status.text.toString().startsWith("جارٍ")) status.text = "اكتملت: $name" }
+                } else {
+                    val reason = err.message ?: err.javaClass.simpleName
+                    try { recordOperationEvent("[$stamp] فشلت — $name: $reason") } catch (_: Throwable) { /* log only */ }
+                    runOnUiThread { status.text = "$errorPrefix: $reason" }
+                }
                 } finally {
                     operationPreferences().edit()
                         .remove("active_pid").remove("active_label").remove("active_started_at").apply()
@@ -2471,8 +2648,8 @@ class MainActivity : Activity() {
             val elapsed = activeOperationStartedAt?.let { start -> ((System.currentTimeMillis() - start) / 1000).coerceAtLeast(0) } ?: 0
             "العملية النشطة: $it  (${elapsed} ثانية)"
         } ?: "لا توجد عملية نشطة الآن."
-        val completed = snapshot.count { it.contains("اكتملت") }
-        val failed = snapshot.count { it.contains("فشلت") }
+        val completed = snapshot.count { it.contains("] اكتملت —") }
+        val failed = snapshot.count { it.contains("] فشلت —") }
         val interrupted = snapshot.count { it.contains("توقفت العملية") }
         logSummary.text = current + "\nالسجل: ${snapshot.size} • ناجحة: $completed • فاشلة: $failed • متوقفة: $interrupted"
         logText.text = if (snapshot.isEmpty()) "لا توجد عمليات مسجلة بعد." else snapshot.asReversed().joinToString("\n\n")
@@ -2536,10 +2713,21 @@ class MainActivity : Activity() {
         private val COLOR_BAR = 0xFF101D36.toInt()
         private val COLOR_ACCENT = 0xFF4C8DFF.toInt()
         private val NAV_IDLE = 0xFF8FA4C8.toInt()
-        private val TAB_TITLES = listOf("الملفات", "الأرشيف", "سجل العمليات")
+        private val TAB_TITLES = listOf("الملفات", "الأرشيف المفتوح", "سجل العمليات")
         private val TEXT_EXTENSIONS = setOf("txt", "md", "csv", "tsv", "json", "xml", "html", "htm", "css", "js", "ts", "py", "kt", "java", "yaml", "yml", "toml", "ini", "properties", "sh", "sql", "log")
-        private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "tif", "tiff")
-        private val DOCUMENT_EXTENSIONS = setOf("pdf", "doc", "docx", "odt", "rtf", "txt", "md", "csv", "tsv", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "json", "xml")
+        private const val FILTER_ALL = 0
+        private const val FILTER_FOLDERS = 1
+        private const val FILTER_QZRA = 2
+        private const val FILTER_IMAGES = 3
+        private const val FILTER_DOCS = 4
+        private const val FILTER_LOCKED = 5
+        private const val SORT_NAME = 0
+        private const val SORT_DATE = 1
+        private const val SORT_SIZE = 2
+        private const val MAX_RENDERED_ITEMS = 3000
+        private const val MAX_ARCHIVE_SCAN = 1000
+        private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "tiff")
+        private val DOCUMENT_EXTENSIONS = setOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "odt", "ods", "odp", "csv", "md", "epub")
         private const val REQUEST_BROWSE = 23
         private const val REQUEST_OUTPUT_TREE = 25
         private const val REQUEST_ALL_FILES = 30

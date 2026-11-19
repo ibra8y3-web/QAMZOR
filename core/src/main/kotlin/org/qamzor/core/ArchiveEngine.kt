@@ -62,8 +62,10 @@ object ArchiveEngine {
     @Serializable private data class Kdf(val name: String, val n: Int, val r: Int, val p: Int, val salt: String)
     @Serializable private data class ManifestAuth(val nonce: String, val tag: String)
     @Serializable private data class ScopeCheck(val nonce: String, val tag: String)
+    /** A protected scope: a directory (everything below it) or, with kind "file", one single file. */
     @Serializable private data class FolderScope(
-        val id: String, val path: String, val kdf: Kdf, val key_check: ScopeCheck
+        val id: String, val path: String, val kdf: Kdf, val key_check: ScopeCheck,
+        val kind: String = "directory"
     )
     private data class ArchiveKeys(
         val minor: Int, val rootChunkKey: ByteArray?,
@@ -85,6 +87,8 @@ object ArchiveEngine {
     data class CreateResult(val archive: File, val entries: Int, val files: Int, val originalBytes: Long, val storedBytes: Long)
     data class VerifyResult(val valid: Boolean, val filesChecked: Int, val bytesChecked: Long, val version: String)
     data class BrowseItem(val path: String, val name: String, val type: String, val size: Long)
+    /** What the fixed 32-byte header alone reveals; no password is needed to read it. */
+    data class ArchiveInfo(val version: String, val encrypted: Boolean, val namesHidden: Boolean)
     data class PreviewResult(val path: String, val data: ByteArray, val bytesTotal: Long, val truncated: Boolean, val verified: Boolean)
     data class CompareResult(
         val leftVersion: String, val rightVersion: String,
@@ -130,9 +134,11 @@ object ArchiveEngine {
         val scopeKeys = LinkedHashMap<String, ByteArray>()
         if (useV13) {
             val directories = items.filter { it.directory }.map { it.name }.toSet()
+            val filePaths = items.filter { !it.directory }.map { it.name }.toSet()
             for ((folderPath, folderPassword) in folderPasswords.toSortedMap()) {
                 validatePath(folderPath)
-                require(folderPath in directories) { "Protected folder does not exist in selected sources: $folderPath" }
+                require(folderPath in directories || folderPath in filePaths) { "Protected folder or file does not exist in selected sources: $folderPath" }
+                val scopeKind = if (folderPath in directories) "directory" else "file"
                 require(folderPassword.isNotEmpty()) { "Folder password must not be empty: $folderPath" }
                 val scopeId = ByteArray(16).also(secureRandom::nextBytes).toHex()
                 val scopeSalt = ByteArray(16).also(secureRandom::nextBytes)
@@ -143,7 +149,7 @@ object ArchiveEngine {
                 val checkTag = encryptAead(ByteArray(0), checkKey, checkNonce, scopeCheckAad(scopeId, folderPath))
                 folderScopes[folderPath] = FolderScope(
                     scopeId, folderPath, Kdf("scrypt", 1 shl 15, 8, 1, scopeSalt.toHex()),
-                    ScopeCheck(checkNonce.toHex(), checkTag.toHex())
+                    ScopeCheck(checkNonce.toHex(), checkTag.toHex()), scopeKind
                 )
                 scopeKeys[scopeId] = payloadKey
                 folderMaster.fill(0); checkKey.fill(0)
@@ -164,7 +170,7 @@ object ArchiveEngine {
                     val fileDigest = MessageDigest.getInstance("SHA-256")
                     var fileSize = 0L
                     val refs = ArrayList<Chunk>()
-                    val activeFolder = folderScopes.keys.filter { name.startsWith("$it/") }.maxByOrNull { it.length }
+                    val activeFolder = folderScopes.keys.filter { name == it || name.startsWith("$it/") }.maxByOrNull { it.length }
                     val scopeId = activeFolder?.let { folderScopes.getValue(it).id }
                     val chunkKey = if (scopeId != null) scopeKeys.getValue(scopeId) else rootChunkKey
                     FileInputStream(source).use { input ->
@@ -290,7 +296,22 @@ object ArchiveEngine {
     fun list(archive: File, password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<EntryInfo> = readManifest(archive, password, folderPasswords).second.entries.map { EntryInfo(it.path, it.type, it.size) }
 
     /**
-     * Archive-relative paths of folders that have their own independent password (QZRA 1.3).
+     * Reads only the fixed header: whether the archive is encrypted and whether names are hidden.
+     * Returns null when the file is not a readable QZRA container. Never needs a password.
+     */
+    @JvmStatic
+    fun inspect(archive: File): ArchiveInfo? = try {
+        RandomAccessFile(archive, "r").use { input ->
+            if (input.length() < HEADER_SIZE) return@use null
+            val signature = ByteArray(8); input.readFully(signature)
+            if (!signature.contentEquals(magic)) return@use null
+            val major = input.readUnsignedShort(); val minor = input.readUnsignedShort()
+            if (major != 1 || minor !in 0..3) null else ArchiveInfo("$major.$minor", minor >= 2, minor == 3)
+        }
+    } catch (_: Exception) { null }
+
+    /**
+     * Archive-relative paths of folders AND single files that have their own independent password (QZRA 1.3).
      * Needs only the archive master password; no folder password is required or checked here.
      * Archives older than 1.3 have no protected folders and return an empty list.
      */
@@ -309,9 +330,12 @@ object ArchiveEngine {
     @JvmStatic
     @JvmOverloads
     fun browse(archive: File, directoryPath: String = "", password: String? = null, folderPasswords: Map<String, String> = emptyMap()): List<BrowseItem> {
-        val (_, manifest, _, _) = readManifest(archive, password, folderPasswords)
+        val context = readManifest(archive, password, folderPasswords)
+        val manifest = context.second
         val parent = directoryPath.trim('/')
         if (parent.isNotEmpty()) validatePath(parent)
+        // A protected folder (and everything under it) cannot be listed without its own password.
+        lockedScopeFor(parent, context.fifth)?.let { error("Folder is locked; unlock it with its independent password: $it") }
         val prefix = if (parent.isEmpty()) "" else "$parent/"
         val children = LinkedHashMap<String, BrowseItem>()
         for (entry in manifest.entries) {
@@ -428,6 +452,19 @@ object ArchiveEngine {
         return outputs
     }
 
+    /**
+     * Outermost protected folder (QZRA 1.3) that encloses [path] — or equals it — and has not been
+     * unlocked with its own password; null when nothing locked is in the way.
+     */
+    private fun lockedScopeFor(path: String, keys: ArchiveKeys?): String? {
+        if (keys == null || keys.minor != 3 || path.isEmpty()) return null
+        return keys.scopePaths.entries
+            .filter { path == it.value || path.startsWith(it.value + "/") }
+            .sortedBy { it.value.length }
+            .firstOrNull { it.key !in keys.scopeKeys }
+            ?.value
+    }
+
     private fun ensureSafeParents(root: File, parent: File) {
         val relative = root.toPath().relativize(parent.canonicalFile.toPath())
         var current = root
@@ -451,14 +488,7 @@ object ArchiveEngine {
         archiveKeys: ArchiveKeys?
     ): Long {
         require(entry.type == "file") { "Only file entries can be decoded" }
-        if (archiveKeys?.minor == 3) {
-            val protectedScope = archiveKeys.scopePaths.entries
-                .filter { entry.path.startsWith(it.value + "/") }
-                .maxByOrNull { it.value.length }
-            if (protectedScope != null && protectedScope.key !in archiveKeys.scopeKeys) {
-                error("Folder is locked; unlock it with its independent password: ${protectedScope.value}")
-            }
-        }
+        lockedScopeFor(entry.path, archiveKeys)?.let { error("Folder is locked; unlock it with its independent password: $it") }
         val wholeDigest = MessageDigest.getInstance("SHA-256")
         var total = 0L
         val blocks = entry.chunks ?: if (entry.size == 0L) emptyList() else listOf(
@@ -658,6 +688,7 @@ object ArchiveEngine {
                         require(scope.id.matches(Regex("[0-9a-f]{32}")) && ids.add(scope.id) && paths.add(scope.path)) { "Duplicate or malformed QZRA 1.3 scope" }
                         require(scope.kdf.name == "scrypt" && scope.kdf.n == 32768 && scope.kdf.r == 8 && scope.kdf.p == 1 && scope.kdf.salt.matches(Regex("[0-9a-f]{32}"))) { "Invalid folder KDF parameters" }
                         require(scope.key_check.nonce.matches(Regex("[0-9a-f]{24}")) && scope.key_check.tag.matches(Regex("[0-9a-f]{32}"))) { "Invalid folder key-check record" }
+                        require(scope.kind == "directory" || scope.kind == "file") { "Unsupported protected scope kind: ${scope.kind}" }
                         scopePaths[scope.id] = scope.path
                     }
                     for ((path, folderPassword) in folderPasswords) {
@@ -749,9 +780,13 @@ object ArchiveEngine {
             val scopes = manifest.security?.scopes ?: error("QZRA 1.3 folder scopes are missing")
             val directoryPaths = manifest.entries.filter { it.type == "directory" }.map { it.path }.toSet()
             val scopeById = scopes.associateBy { it.id }
-            for (scope in scopes) require(scope.path in directoryPaths) { "Protected folder is not declared as a directory: ${scope.path}" }
+            val filePaths = manifest.entries.filter { it.type == "file" }.map { it.path }.toSet()
+            for (scope in scopes) {
+                if (scope.kind == "file") require(scope.path in filePaths) { "Protected file is not declared as a file: ${scope.path}" }
+                else require(scope.path in directoryPaths) { "Protected folder is not declared as a directory: ${scope.path}" }
+            }
             for (entry in manifest.entries.filter { it.type == "file" }) {
-                val expectedScope = scopes.filter { entry.path.startsWith(it.path + "/") }.maxByOrNull { it.path.length }?.id
+                val expectedScope = scopes.filter { entry.path == it.path || entry.path.startsWith(it.path + "/") }.maxByOrNull { it.path.length }?.id
                 for (block in entry.chunks.orEmpty()) require(block.scope_id == expectedScope) { "QZRA 1.3 chunk scope does not match its protected folder: ${entry.path}" }
             }
             for (block in physical.values) require(block.scope_id == null || block.scope_id in scopeById) { "Chunk references an unknown protected-folder scope" }

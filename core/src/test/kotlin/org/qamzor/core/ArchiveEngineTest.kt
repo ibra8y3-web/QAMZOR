@@ -386,4 +386,74 @@ class ArchiveEngineTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun singleFileCanHaveItsOwnPasswordInsideOrOutsideAFolder() {
+        val root = Files.createTempDirectory("qamzor-file-lock-test").toFile()
+        try {
+            val project = File(root, "Project").apply { mkdirs() }
+            File(project, "open.txt").writeText("open\n")
+            File(project, "private.txt").writeText("private\n")
+            val alone = File(root, "alone.txt").apply { writeText("alone\n") }
+            val archive = File(root, "files.qzra")
+            val master = "test-master-password-13"
+            val locks = mapOf("Project/private.txt" to "file-password-one", "alone.txt" to "file-password-two")
+            ArchiveEngine.convertToQzra(archive, listOf(project, alone), password = master, encryptMetadata = true, folderPasswords = locks)
+
+            assertEquals(listOf("Project/private.txt", "alone.txt"), ArchiveEngine.protectedFolders(archive, master))
+            // Unlocked siblings stay readable with the master password only.
+            assertEquals("open\n", ArchiveEngine.preview(archive, "Project/open.txt", 64, master).data.toString(Charsets.UTF_8))
+            // Each locked file refuses to open without its own password.
+            assertFailsWith<IllegalStateException> { ArchiveEngine.preview(archive, "Project/private.txt", 64, master) }
+            assertFailsWith<IllegalStateException> { ArchiveEngine.preview(archive, "alone.txt", 64, master) }
+            assertFailsWith<IllegalStateException> { ArchiveEngine.verify(archive, master) }
+            assertFailsWith<IllegalStateException> { ArchiveEngine.preview(archive, "alone.txt", 64, master, mapOf("Project/private.txt" to "file-password-one")) }
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.verify(archive, master, mapOf("alone.txt" to "wrong-password-xx")) }
+            // The right passwords open exactly what they protect.
+            assertEquals("alone\n", ArchiveEngine.preview(archive, "alone.txt", 64, master, mapOf("alone.txt" to "file-password-two")).data.toString(Charsets.UTF_8))
+            assertTrue(ArchiveEngine.verify(archive, master, locks).valid)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun inspectReadsOnlyTheHeader() {
+        val root = Files.createTempDirectory("qamzor-inspect-test").toFile()
+        try {
+            val source = File(root, "a.txt").apply { writeText("a") }
+            val plain = File(root, "plain.qzra"); ArchiveEngine.create(plain, listOf(source))
+            val encrypted = File(root, "enc.qzra"); ArchiveEngine.create(encrypted, listOf(source), password = "correct horse battery staple")
+            val hidden = File(root, "hidden.qzra"); ArchiveEngine.create(hidden, listOf(source), password = "correct horse battery staple", encryptMetadata = true)
+            assertEquals(false, ArchiveEngine.inspect(plain)!!.encrypted)
+            assertEquals(true, ArchiveEngine.inspect(encrypted)!!.encrypted)
+            assertEquals(false, ArchiveEngine.inspect(encrypted)!!.namesHidden)
+            assertEquals(true, ArchiveEngine.inspect(hidden)!!.namesHidden)
+            assertEquals(null, ArchiveEngine.inspect(source))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun protectedFolderCannotBeListedOrReadWithoutItsOwnPassword() {
+        val root = Files.createTempDirectory("qamzor-locked-browse-test").toFile()
+        try {
+            val project = File(root, "Project").apply { mkdirs() }
+            File(project, "README.txt").writeText("public\n")
+            File(project, "Vault/Inner").mkdirs()
+            File(project, "Vault/secret.txt").writeText("secret\n")
+            File(project, "Vault/Inner/deep.txt").writeText("deep\n")
+            val archive = File(root, "locked.qzra")
+            val master = "test-master-password-13"
+            val vault = "Project/Vault"
+            val vaultPassword = "different-folder-password"
+            ArchiveEngine.convertToQzra(archive, listOf(project), password = master, encryptMetadata = true, folderPasswords = mapOf(vault to vaultPassword))
+
+            // The unprotected part is reachable with the master password alone.
+            assertEquals(setOf("README.txt", "Vault"), ArchiveEngine.browse(archive, "Project", master).map { it.name }.toSet())
+            // The locked folder and anything below it are not.
+            assertFailsWith<IllegalStateException> { ArchiveEngine.browse(archive, vault, master) }
+            assertFailsWith<IllegalStateException> { ArchiveEngine.browse(archive, "$vault/Inner", master) }
+            assertFailsWith<IllegalStateException> { ArchiveEngine.preview(archive, "$vault/secret.txt", 64, master) }
+            assertFailsWith<IllegalArgumentException> { ArchiveEngine.browse(archive, vault, master, mapOf(vault to "wrong-folder-password")) }
+            // With the folder's own password everything opens.
+            val unlocked = mapOf(vault to vaultPassword)
+            assertEquals(setOf("Inner", "secret.txt"), ArchiveEngine.browse(archive, vault, master, unlocked).map { it.name }.toSet())
+            assertEquals(listOf("deep.txt"), ArchiveEngine.browse(archive, "$vault/Inner", master, unlocked).map { it.name })
+        } finally { root.deleteRecursively() }
+    }
+
 }

@@ -74,6 +74,8 @@ A folder scope record contains:
 - `path`: exact archive-relative directory path
 - `kdf`: scrypt (`N=32768`, `r=8`, `p=1`) with an independent random 16-byte salt
 - `key_check`: AES-GCM nonce and tag that validate the folder password without requiring a non-empty file in that folder
+- `kind` (optional, default `"directory"`): `"file"` makes the scope protect exactly one file (`path` must name a file entry) instead of a directory subtree. The field is omitted for directory scopes, so archives that only protect folders are byte-for-byte unchanged. Readers that predate `kind` reject a file scope with "Protected folder is not declared as a directory" and never expose its content (the Kotlin engine reads and writes file scopes; the Python and native C readers do not yet).
+- Locking rules: a path is unlocked only when **every** enclosing scope has been unlocked. Listing a locked directory, and reading any file under a locked directory or a locked file itself, fails until its own password is supplied.
 
 The folder KDF root is derived from that folder's password and its own independent salt. It is split into separate `folder-check` and `folder-chunks` subkeys using the HMAC-SHA-256 domain-separation rule above. The folder key-check authenticates an empty plaintext with associated data:
 
