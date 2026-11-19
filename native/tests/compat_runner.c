@@ -1,6 +1,8 @@
 /* QAMZOR Compatibility Suite runner for the Native SDK.
  * Usage: compat_runner <path-to-compat-directory>
  * Exit status 0 only if every vector in manifest.json behaves exactly as specified. */
+/* Keep Darwin extensions visible; macOS 26 declares mkdtemp in unistd.h. */
+#define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 #include "qzra.h"
