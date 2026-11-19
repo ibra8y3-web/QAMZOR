@@ -75,8 +75,11 @@ dependencies {
 
 Replace `<TAG>` with an actual Git tag published by this repository, for
 example the exact tag shown on its JitPack page. Do not copy the placeholder
-literally. The Android artifact exposes the Java SDK and Kotlin Core as
-transitive API dependencies.
+literally. For an initial smoke test after these changes are merged into
+`main`, JitPack also supports the branch version `main-SNAPSHOT`; this avoids
+creating a `v*` tag and therefore does not start the Maven Central release
+workflow. Use a fixed tag for reproducible versioned releases. The Android
+artifact exposes the Java SDK and Kotlin Core as transitive API dependencies.
 
 The Native SDK is not a Maven artifact. Its source package is attached to the
 GitHub Release as `libqzra-<version>.tar.gz` with a SHA-256 checksum.
