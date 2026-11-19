@@ -90,5 +90,9 @@ afterEvaluate {
             }
         }
     }
-    tasks.matching { it.name.startsWith('publishMavenPublicationTo') }.configureEach { dependsOn 'checkCentralMetadata' }
+    // Validate Central-only metadata only for the signed local Central staging task.
+    // JitPack and Maven Local must remain usable without a Portal token, GPG key or POM maintainer fields.
+    tasks.matching { it.name == 'publishMavenPublicationToCentralStagingRepository' }.configureEach {
+        dependsOn 'checkCentralMetadata'
+    }
 }
