@@ -28,11 +28,13 @@ jobs:
     env:
       ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
       ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
-      QAMZOR_POM_URL: ${{ vars.POM_URL }}
-      QAMZOR_POM_SCMURL: ${{ vars.POM_SCM_URL }}
-      QAMZOR_POM_DEVELOPERID: ${{ vars.POM_DEVELOPER_ID }}
-      QAMZOR_POM_DEVELOPERNAME: ${{ vars.POM_DEVELOPER_NAME }}
-      QAMZOR_POM_DEVELOPEREMAIL: ${{ vars.POM_DEVELOPER_EMAIL }}
+      # Accept existing metadata whether it was saved as an Actions Variable or Secret.
+      # Repository URL and maintainer fallback values keep first-time setup from blocking the release.
+      QAMZOR_POM_URL: ${{ vars.POM_URL || secrets.POM_URL || 'https://github.com/ibra8y3-web/QAMZOR' }}
+      QAMZOR_POM_SCMURL: ${{ vars.POM_SCM_URL || secrets.POM_SCM_URL || 'https://github.com/ibra8y3-web/QAMZOR.git' }}
+      QAMZOR_POM_DEVELOPERID: ${{ vars.POM_DEVELOPER_ID || secrets.POM_DEVELOPER_ID || 'ibra8y3-web' }}
+      QAMZOR_POM_DEVELOPERNAME: ${{ vars.POM_DEVELOPER_NAME || secrets.POM_DEVELOPER_NAME || 'ibra8y3-web' }}
+      QAMZOR_POM_DEVELOPEREMAIL: ${{ vars.POM_DEVELOPER_EMAIL || secrets.POM_DEVELOPER_EMAIL || '251591454+ibra8y3-web@users.noreply.github.com' }}
     steps:
       - uses: actions/checkout@v7
       - name: Derive version from tag
@@ -55,10 +57,15 @@ jobs:
           gradle-version: '8.9'
       - name: Build, sign and stage into the local staging repository
         run: >
-          gradle --no-daemon -Prelease -PVERSION_NAME="$RELEASE_VERSION"
-          :core:publishMavenPublicationToCentralStagingRepository
-          :sdk:publishMavenPublicationToCentralStagingRepository
-          :sdk-java:publishMavenPublicationToCentralStagingRepository
+          gradle --no-daemon -Prelease -PVERSION_NAME="$RELEASE_VERSION" \
+          -Pqamzor.pom.url="$QAMZOR_POM_URL" \
+          -Pqamzor.pom.scmUrl="$QAMZOR_POM_SCMURL" \
+          -Pqamzor.pom.developerId="$QAMZOR_POM_DEVELOPERID" \
+          -Pqamzor.pom.developerName="$QAMZOR_POM_DEVELOPERNAME" \
+          -Pqamzor.pom.developerEmail="$QAMZOR_POM_DEVELOPEREMAIL" \
+          :core:publishMavenPublicationToCentralStagingRepository \
+          :sdk:publishMavenPublicationToCentralStagingRepository \
+          :sdk-java:publishMavenPublicationToCentralStagingRepository \
           :sdk-android:publishMavenPublicationToCentralStagingRepository
       - name: Build the Central bundle (fails if anything is unsigned or missing)
         run: >
