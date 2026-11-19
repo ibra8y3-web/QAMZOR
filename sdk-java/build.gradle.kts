@@ -42,6 +42,10 @@ tasks.named<JavaCompile>("compileJava") {
     dependsOn(generateQamzorVersion)
 }
 
+tasks.withType<Jar>().matching { it.name == "sourcesJar" }.configureEach {
+    dependsOn(generateQamzorVersion)
+}
+
 dependencies {
     api(project(":core"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
