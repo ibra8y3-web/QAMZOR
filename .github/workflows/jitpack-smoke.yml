@@ -1,0 +1,73 @@
+name: JitPack artifact smoke test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/jitpack-smoke.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Git tag to verify on JitPack
+        required: true
+        default: v0.8.0
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-jitpack:
+    name: Verify published JitPack artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VERSION: ${{ github.event.inputs.version || 'v0.8.0' }}
+    steps:
+      - name: Request and verify all four Maven artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GROUP_PATH="com/github/ibra8y3-web/QAMZOR"
+          BASE="https://jitpack.io/${GROUP_PATH}"
+          BUILD_LOG="${BASE}/${VERSION}/build.log"
+          TMP_FILE="$(mktemp)"
+          trap 'rm -f "$TMP_FILE"' EXIT
+
+          fetch_artifact() {
+            local artifact="$1"
+            local extension="$2"
+            local url="${BASE}/${artifact}/${VERSION}/${artifact}-${VERSION}.${extension}"
+
+            echo "::group::Checking ${artifact} (${extension})"
+            for attempt in $(seq 1 30); do
+              local code
+              code="$(curl --silent --show-error --location --output "$TMP_FILE" --write-out '%{http_code}' "$url" || true)"
+              if [[ "$code" == "200" && -s "$TMP_FILE" ]]; then
+                echo "Found ${artifact}-${VERSION}.${extension} on JitPack."
+                echo "Downloaded bytes: $(wc -c < "$TMP_FILE" | tr -d ' ')"
+                echo "::endgroup::"
+                return 0
+              fi
+
+              echo "Attempt ${attempt}/30 returned HTTP ${code:-unknown}; waiting for JitPack build."
+              sleep 30
+            done
+
+            echo "JitPack did not serve ${url} after 15 minutes."
+            echo "JitPack build log:"
+            curl --silent --show-error --location "$BUILD_LOG" || true
+            echo "::endgroup::"
+            return 1
+          }
+
+          for artifact in qamzor-core qamzor-sdk qamzor-java; do
+            fetch_artifact "$artifact" pom
+            fetch_artifact "$artifact" jar
+          done
+
+          fetch_artifact qamzor-android pom
+          fetch_artifact qamzor-android aar
+
+          echo "All four QAMZOR SDK publications are available from JitPack for ${VERSION}."
