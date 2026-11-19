@@ -56,17 +56,17 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Build, sign and stage into the local staging repository
-        run: >
+        run: |
           gradle --no-daemon -Prelease -PVERSION_NAME="$RELEASE_VERSION" \
-          -Pqamzor.pom.url="$QAMZOR_POM_URL" \
-          -Pqamzor.pom.scmUrl="$QAMZOR_POM_SCMURL" \
-          -Pqamzor.pom.developerId="$QAMZOR_POM_DEVELOPERID" \
-          -Pqamzor.pom.developerName="$QAMZOR_POM_DEVELOPERNAME" \
-          -Pqamzor.pom.developerEmail="$QAMZOR_POM_DEVELOPEREMAIL" \
-          :core:publishMavenPublicationToCentralStagingRepository \
-          :sdk:publishMavenPublicationToCentralStagingRepository \
-          :sdk-java:publishMavenPublicationToCentralStagingRepository \
-          :sdk-android:publishMavenPublicationToCentralStagingRepository
+            -Pqamzor.pom.url="$QAMZOR_POM_URL" \
+            -Pqamzor.pom.scmUrl="$QAMZOR_POM_SCMURL" \
+            -Pqamzor.pom.developerId="$QAMZOR_POM_DEVELOPERID" \
+            -Pqamzor.pom.developerName="$QAMZOR_POM_DEVELOPERNAME" \
+            -Pqamzor.pom.developerEmail="$QAMZOR_POM_DEVELOPEREMAIL" \
+            :core:publishMavenPublicationToCentralStagingRepository \
+            :sdk:publishMavenPublicationToCentralStagingRepository \
+            :sdk-java:publishMavenPublicationToCentralStagingRepository \
+            :sdk-android:publishMavenPublicationToCentralStagingRepository
       - name: Build the Central bundle (fails if anything is unsigned or missing)
         run: >
           python3 tools/make_central_bundle.py build/central-staging "build/qamzor-$RELEASE_VERSION-bundle.zip"
