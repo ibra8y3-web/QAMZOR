@@ -19,7 +19,7 @@ import java.util.List;
  */
 public final class Qamzor {
     /** SDK version (kept in sync with {@code VERSION_NAME} in gradle.properties by the build). */
-    public static final String SDK_VERSION = "0.8.0-dev";
+    public static final String SDK_VERSION = QamzorVersion.VALUE;
 
     private Qamzor() { }
 
