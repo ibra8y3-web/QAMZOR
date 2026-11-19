@@ -53,6 +53,10 @@ class MainActivity : Activity() {
     private lateinit var explorerContainer: LinearLayout
     private lateinit var explorerPathText: TextView
     private lateinit var archiveInfoText: TextView
+    private lateinit var archiveTabsRow: LinearLayout
+    private lateinit var archiveActionsRow: LinearLayout
+    private lateinit var archiveFilesTabButton: TextView
+    private lateinit var archiveFoldersTabButton: TextView
     private lateinit var logSummary: TextView
     private lateinit var logText: TextView
     private val pages = ArrayList<View>()
@@ -75,6 +79,16 @@ class MainActivity : Activity() {
     @Volatile private var backgroundBusy = false
     private var pendingExtraction: File? = null
     private var pendingExtractionPaths: Set<String>? = null
+    private var archiveLibraryTab: String = "files"
+    private val archiveLibraryEntries = mutableListOf<ArchiveLibraryEntry>()
+    private data class ArchiveLibraryEntry(
+        val id: String,
+        val archivePath: String,
+        val originalName: String,
+        val kind: String,
+        val createdAt: Long
+    )
+
     private var openedArchive: File? = null
     private var openedArchiveTemp = false
     private var openedArchiveLabel: String = ""
@@ -90,6 +104,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) purgeStaleCache()
         restoreOperationHistory()
+        restoreArchiveLibrary()
         buildInterface()
         if (savedInstanceState == null) handleViewIntent(intent)
     }
@@ -284,6 +299,7 @@ class MainActivity : Activity() {
     }
 
     private fun selectTab(index: Int) {
+        if (currentTab == 1 && index != 1 && openedArchive != null) closeOpenedArchive()
         currentTab = index
         for ((position, page) in pages.withIndex()) page.visibility = if (position == index) View.VISIBLE else View.GONE
         for (position in navBoxes.indices) {
@@ -1078,7 +1094,11 @@ class MainActivity : Activity() {
                 when {
                     name.isEmpty() || name.contains('/') -> { status.text = "الاسم غير صالح." }
                     target.exists() -> { status.text = "يوجد عنصر بنفس الاسم." }
-                    file.renameTo(target) -> { status.text = "تمت إعادة التسمية."; loadDirectory(currentDir) }
+                    file.renameTo(target) -> {
+                        if (isQzra(file)) updateArchiveLibraryPath(file, target)
+                        status.text = "تمت إعادة التسمية."
+                        loadDirectory(currentDir)
+                    }
                     else -> { status.text = "تعذرت إعادة التسمية." }
                 }
             }.setNegativeButton("إلغاء", null).show()
@@ -1094,6 +1114,7 @@ class MainActivity : Activity() {
                     var failed = 0
                     for (file in files) if (!file.deleteRecursively()) failed++
                     runOnUiThread {
+                        forgetDeletedArchives(files.filter { !it.exists() })
                         status.text = if (failed == 0) "تم الحذف." else "تعذر حذف $failed عنصر."
                         loadDirectory(currentDir)
                     }
@@ -1328,6 +1349,9 @@ class MainActivity : Activity() {
         sources: List<File>, output: File, password: String?, encryptMetadata: Boolean,
         locks: Map<String, String>, deleteOriginals: Boolean
     ) {
+        val sourcesWithKinds = sources.map { source ->
+            source to if (source.isDirectory) "folders" else "files"
+        }
         status.text = "جارٍ إنشاء ${output.name}…"
         runOnWorker("فشل إنشاء أرشيف QZRA") {
             try {
@@ -1346,12 +1370,10 @@ class MainActivity : Activity() {
                     status.text = "تم إنشاء ${output.name} والتحقق منه ✓ (${verified.version}) • الملفات: ${result.files} • " +
                         "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
                         (if (locks.isNotEmpty()) " • مجلدات محمية: ${locks.size}" else "") +
-                        (if (deleteOriginals) " • حُذف الأصل ($removed)" else "")
+                        (if (deleteOriginals) " • حُذف الأصل ($removed)" else "") +
+                        " • أُضيف إلى مكتبة الأرشيف"
+                    registerArchiveSources(output, sourcesWithKinds)
                     loadDirectory(currentDir)
-                    installOpenedArchive(output, output.name, password, locks.keys.toSet(), false)
-                    openedFolderPasswords.putAll(locks)
-                    selectTab(1)
-                    showVirtualExplorer("")
                 }
             } catch (error: Exception) {
                 try { output.delete() } catch (_: Exception) { /* best effort */ }
@@ -1364,14 +1386,49 @@ class MainActivity : Activity() {
 
     private fun buildOpenPage(): View {
         val column = pageColumn()
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        row.addView(actionButton("extract", "استخراج", true) { extractOpenedArchive() },
+
+        archiveTabsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        archiveFilesTabButton = label("الملفات المؤرشفة", 12.5f, 0xFFFFFFFF.toInt(), true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                archiveLibraryTab = "files"
+                renderArchiveLibrary()
+            }
+        }
+        archiveFoldersTabButton = label("المجلدات المؤرشفة", 12.5f, 0xFFBBD2FF.toInt(), false).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                archiveLibraryTab = "folders"
+                renderArchiveLibrary()
+            }
+        }
+        archiveTabsRow.addView(archiveFilesTabButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
+        archiveTabsRow.addView(archiveFoldersTabButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
+        column.addView(archiveTabsRow, LinearLayout.LayoutParams(-1, dp(48)))
+
+        archiveActionsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            visibility = View.GONE
+        }
+        archiveActionsRow.addView(actionButton("extract", "استخراج", true) { extractOpenedArchive() },
             LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
-        row.addView(actionButton("shield_check", "فحص", false) { verifyOpenedArchive() },
+        archiveActionsRow.addView(actionButton("shield_check", "فحص", false) { verifyOpenedArchive() },
             LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
-        row.addView(actionButton("close", "إغلاق", false) { closeOpenedArchive() },
+        archiveActionsRow.addView(actionButton("archive", "المكتبة", false) { closeOpenedArchive() },
             LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
-        column.addView(row)
+        column.addView(archiveActionsRow, LinearLayout.LayoutParams(-1, dp(48)))
+
         archiveInfoText = label("", 14f, 0xFFF4F7FF.toInt(), true).apply { setPadding(dp(2), dp(14), dp(2), dp(0)) }
         explorerPathText = label("", 11f, 0xFF9FB4D3.toInt(), false).apply { setPadding(dp(2), dp(2), dp(2), dp(8)) }
         column.addView(archiveInfoText)
@@ -1381,14 +1438,227 @@ class MainActivity : Activity() {
         return pageScroll(column)
     }
 
-    private fun renderEmptyExplorer() {
+    private fun archiveLibraryPreferences() =
+        getSharedPreferences("qamzor-archive-library", Context.MODE_PRIVATE)
+
+    private fun restoreArchiveLibrary() {
+        val raw = archiveLibraryPreferences().getString("entries", "").orEmpty()
+        if (raw.isBlank()) return
+        try {
+            val array = org.json.JSONArray(raw)
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val id = item.optString("id")
+                val archivePath = item.optString("archivePath")
+                val originalName = item.optString("originalName")
+                val kind = item.optString("kind")
+                if (id.isNotBlank() && archivePath.isNotBlank() && originalName.isNotBlank() &&
+                    (kind == "files" || kind == "folders")) {
+                    archiveLibraryEntries.add(
+                        ArchiveLibraryEntry(id, archivePath, originalName, kind, item.optLong("createdAt"))
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            archiveLibraryEntries.clear()
+        }
+    }
+
+    private fun persistArchiveLibrary() {
+        val array = org.json.JSONArray()
+        for (entry in archiveLibraryEntries) {
+            array.put(org.json.JSONObject().apply {
+                put("id", entry.id)
+                put("archivePath", entry.archivePath)
+                put("originalName", entry.originalName)
+                put("kind", entry.kind)
+                put("createdAt", entry.createdAt)
+            })
+        }
+        archiveLibraryPreferences().edit().putString("entries", array.toString()).apply()
+    }
+
+    /** One library card is stored for every source, even when several sources share one QZRA file. */
+    private fun registerArchiveSources(archive: File, sources: List<Pair<File, String>>) {
+        val createdAt = System.currentTimeMillis()
+        for ((index, source) in sources.withIndex()) {
+            val id = "\$createdAt-\$index-\${archive.name}"
+            archiveLibraryEntries.removeAll { it.id == id }
+            archiveLibraryEntries.add(
+                ArchiveLibraryEntry(id, archive.absolutePath, source.first.name, source.second, createdAt)
+            )
+        }
+        persistArchiveLibrary()
+        renderArchiveLibrary()
+    }
+
+    private fun renderArchiveTabs() {
+        val filesSelected = archiveLibraryTab == "files"
+        archiveFilesTabButton.setTextColor(if (filesSelected) 0xFFFFFFFF.toInt() else 0xFFBBD2FF.toInt())
+        archiveFilesTabButton.setTypeface(null, if (filesSelected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+        archiveFilesTabButton.background = rounded(if (filesSelected) 0xFF315AA0.toInt() else 0xFF1D3152.toInt(), 11)
+        archiveFoldersTabButton.setTextColor(if (!filesSelected) 0xFFFFFFFF.toInt() else 0xFFBBD2FF.toInt())
+        archiveFoldersTabButton.setTypeface(null, if (!filesSelected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+        archiveFoldersTabButton.background = rounded(if (!filesSelected) 0xFF315AA0.toInt() else 0xFF1D3152.toInt(), 11)
+    }
+
+    private fun renderArchiveLibrary() {
+        if (!::explorerContainer.isInitialized || !::archiveTabsRow.isInitialized) return
+        archiveTabsRow.visibility = View.VISIBLE
+        archiveActionsRow.visibility = View.GONE
+        renderArchiveTabs()
         explorerContainer.removeAllViews()
-        archiveInfoText.text = "لا يوجد أرشيف مفتوح"
-        explorerPathText.text = ""
-        explorerContainer.addView(label("اضغط على أي ملف .qzra في تبويب «الملفات» لفتحه هنا. الأرشيفات المحمية لا يقرأها أي تطبيق آخر.", 12.5f, 0xFF9FB4D3.toInt(), false)
-            .apply { setPadding(dp(4), dp(10), dp(4), dp(10)) })
-        explorerContainer.addView(actionButton("folder_search", "فتح عبر منتقي النظام", false) { pickArchive(REQUEST_BROWSE) },
-            LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(8) })
+
+        val selectedKind = archiveLibraryTab
+        val entries = archiveLibraryEntries
+            .filter { it.kind == selectedKind }
+            .sortedByDescending { it.createdAt }
+        val title = if (selectedKind == "files") "الملفات المؤرشفة" else "المجلدات المؤرشفة"
+        val available = entries.count { File(it.archivePath).isFile }
+        archiveInfoText.text = "\$title • \${entries.size} عنصر"
+        explorerPathText.text = "المحفوظات ثابتة هنا حتى بعد الخروج من القسم أو إغلاق التطبيق • المتاح: \$available"
+
+        if (entries.isEmpty()) {
+            val emptyIcon = if (selectedKind == "files") "file" else "folder"
+            explorerContainer.addView(iconBadge(emptyIcon, 0x334C8DFF, 0xFF8FB4FF.toInt(), 62),
+                LinearLayout.LayoutParams(dp(62), dp(62)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(24) })
+            explorerContainer.addView(
+                label(if (selectedKind == "files") "لا توجد ملفات مؤرشفة بعد" else "لا توجد مجلدات مؤرشفة بعد",
+                    14f, 0xFFE7EFFD.toInt(), true).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(dp(4), dp(12), dp(4), dp(6))
+                }
+            )
+            explorerContainer.addView(
+                label("بعد إنشاء أرشيف لأي ملف أو مجلد، سيظهر هنا تلقائيًا في القسم المناسب، ولن يختفي عند التنقل.",
+                    11.5f, 0xFF9FB4D3.toInt(), false).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(dp(12), dp(2), dp(12), dp(12))
+                }
+            )
+            return
+        }
+
+        for (entry in entries) {
+            explorerContainer.addView(archiveLibraryRow(entry),
+                LinearLayout.LayoutParams(-1, dp(68)).apply { bottomMargin = dp(7) })
+        }
+    }
+
+    private fun archiveLibraryRow(entry: ArchiveLibraryEntry): View {
+        val archive = File(entry.archivePath)
+        val exists = archive.isFile
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+            setPaddingRelative(dp(10), dp(5), dp(6), dp(5))
+            background = rounded(0xFF14223F.toInt(), 14)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                if (exists) openArchiveFile(archive, archive.name, false)
+                else status.text = "ملف الأرشيف الأصلي غير موجود: \${entry.archivePath}"
+            }
+            setOnLongClickListener {
+                showArchiveLibraryActions(entry)
+                true
+            }
+        }
+        val folderEntry = entry.kind == "folders"
+        row.addView(
+            iconBadge(if (folderEntry) "folder" else "file",
+                if (folderEntry) 0x33FFC857 else 0x334B73AA,
+                if (folderEntry) 0xFFFFC857.toInt() else 0xFFBBD2FF.toInt(), 42),
+            LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(10) }
+        )
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(label(entry.originalName, 13.5f, 0xFFF4F7FF.toInt(), true).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            setSingleLine(true)
+        })
+        val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM)
+            .format(java.util.Date(entry.createdAt))
+        val detail = if (exists) {
+            "\${archive.name} • \${formatBytes(archive.length())} • \$date"
+        } else {
+            "ملف الأرشيف غير موجود في مكانه الأصلي • \$date"
+        }
+        texts.addView(label(detail, 9.5f, if (exists) 0xFF9FB4D3.toInt() else 0xFFFFB6B6.toInt(), false).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setSingleLine(true)
+        })
+        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(toolbarButton("more", "خيارات \${entry.originalName}", 0xFF9FB4D3.toInt()) {
+            showArchiveLibraryActions(entry)
+        }, LinearLayout.LayoutParams(dp(34), dp(42)))
+        return row
+    }
+
+    private fun showArchiveLibraryActions(entry: ArchiveLibraryEntry) {
+        val archive = File(entry.archivePath)
+        val actions = ArrayList<SheetAction>()
+        if (archive.isFile) {
+            actions += SheetAction("folder_search", "فتح واستعراض الأرشيف", false) {
+                openArchiveFile(archive, archive.name, false)
+            }
+            actions += SheetAction("extract", "استخراج الأرشيف إلى مجلد جديد", false) { quickExtract(archive) }
+        }
+        actions += SheetAction("close", "إزالة العنصر من القائمة فقط", false) {
+            archiveLibraryEntries.removeAll { it.id == entry.id }
+            persistArchiveLibrary()
+            renderArchiveLibrary()
+            status.text = "تمت إزالة العنصر من قائمة المحفوظات دون حذف ملف الأرشيف."
+        }
+        if (archive.isFile) {
+            actions += SheetAction("trash", "حذف ملف الأرشيف وكل سجلاته", true) {
+                AlertDialog.Builder(this)
+                    .setTitle("حذف الأرشيف نهائيًا")
+                    .setMessage("سيتم حذف \${archive.name} من الهاتف وإزالة كل العناصر المرتبطة به من قائمة المحفوظات.")
+                    .setPositiveButton("حذف نهائيًا") { _, _ ->
+                        if (archive.delete() || !archive.exists()) {
+                            archiveLibraryEntries.removeAll { it.archivePath == entry.archivePath }
+                            persistArchiveLibrary()
+                            renderArchiveLibrary()
+                            status.text = "تم حذف الأرشيف وإزالة سجلاته."
+                        } else {
+                            status.text = "تعذر حذف ملف الأرشيف من الهاتف."
+                        }
+                    }
+                    .setNegativeButton("إلغاء", null)
+                    .show()
+            }
+        }
+        showSheet(entry.originalName, if (entry.kind == "folders") "مجلد مؤرشف" else "ملف مؤرشف", actions)
+    }
+
+    private fun updateArchiveLibraryPath(oldFile: File, newFile: File) {
+        var changed = false
+        for (index in archiveLibraryEntries.indices) {
+            if (archiveLibraryEntries[index].archivePath == oldFile.absolutePath) {
+                archiveLibraryEntries[index] = archiveLibraryEntries[index].copy(archivePath = newFile.absolutePath)
+                changed = true
+            }
+        }
+        if (changed) {
+            persistArchiveLibrary()
+            renderArchiveLibrary()
+        }
+    }
+
+    private fun forgetDeletedArchives(files: List<File>) {
+        val paths = files.filter { isQzra(it) }.map { it.absolutePath }.toSet()
+        if (paths.isEmpty()) return
+        if (archiveLibraryEntries.removeAll { it.archivePath in paths }) {
+            persistArchiveLibrary()
+            renderArchiveLibrary()
+        }
+    }
+
+    private fun renderEmptyExplorer() {
+        renderArchiveLibrary()
     }
 
     private fun explorerRow(kind: String, title: String, subtitle: String, highlight: Boolean, onClick: () -> Unit, onLong: (() -> Unit)? = null): View {
@@ -1417,6 +1687,8 @@ class MainActivity : Activity() {
 
     private fun renderExplorer(path: String, children: List<ArchiveEngine.BrowseItem>) {
         explorerPath = path
+        archiveTabsRow.visibility = View.GONE
+        archiveActionsRow.visibility = View.VISIBLE
         explorerContainer.removeAllViews()
         archiveInfoText.text = openedArchiveLabel.ifEmpty { "أرشيف QZRA" }
         val folderCount = children.count { it.type == "directory" }
@@ -1499,8 +1771,8 @@ class MainActivity : Activity() {
         openedProtected = emptySet()
         openedFolderPasswords.clear()
         explorerPath = ""
-        renderEmptyExplorer()
-        status.text = "تم إغلاق الأرشيف ومسح كلمات المرور من الذاكرة."
+        renderArchiveLibrary()
+        status.text = "تم إغلاق الأرشيف والعودة إلى مكتبة المحفوظات."
     }
 
     private fun extractOpenedArchive() {
@@ -2230,7 +2502,7 @@ class MainActivity : Activity() {
         private val COLOR_BAR = 0xFF101D36.toInt()
         private val COLOR_ACCENT = 0xFF4C8DFF.toInt()
         private val NAV_IDLE = 0xFF8FA4C8.toInt()
-        private val TAB_TITLES = listOf("الملفات", "الأرشيف المفتوح", "سجل العمليات")
+        private val TAB_TITLES = listOf("الملفات", "الأرشيف", "سجل العمليات")
         private val TEXT_EXTENSIONS = setOf("txt", "md", "csv", "tsv", "json", "xml", "html", "htm", "css", "js", "ts", "py", "kt", "java", "yaml", "yml", "toml", "ini", "properties", "sh", "sql", "log")
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "tif", "tiff")
         private val DOCUMENT_EXTENSIONS = setOf("pdf", "doc", "docx", "odt", "rtf", "txt", "md", "csv", "tsv", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "json", "xml")
