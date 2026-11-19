@@ -131,7 +131,7 @@ The explorer can extract one selected file, one selected folder subtree, or the 
 
 The Kotlin core now has cross-language fixtures and JUnit tests for QZRA 1.0/1.1/1.2/1.3 reading, QZRA 1.3 writing, independent folder unlock, virtual folder navigation, bounded preview, selected extraction and wrong-password rejection. These JUnit tests still require a successful Gradle run on GitHub. Do not treat the updated Android UI as release-ready until `Platform builds` succeeds and the new APK passes physical-device, large-file, SAF-provider, lifecycle and low-storage tests. See [Android user guide](docs/ANDROID_USER_GUIDE.md) and [Kotlin implementation status](docs/KOTLIN_IMPLEMENTATION.md).
 
-See [Kotlin SDK guide](docs/KOTLIN_SDK.md) and [GitHub publishing instructions](GITHUB_SETUP.md).
+See [SDK overview and distribution coordinates](docs/SDK_OVERVIEW.md), [Kotlin SDK guide](docs/KOTLIN_SDK.md), and [publishing instructions](docs/PUBLISHING.md) / [GitHub setup](GITHUB_SETUP.md).
 
 
 ### Convert ordinary files and folders to native QZRA
