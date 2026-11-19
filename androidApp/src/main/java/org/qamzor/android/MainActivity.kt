@@ -1253,7 +1253,6 @@ class MainActivity : Activity() {
             textSize = 14f
             isChecked = protectPreset
             setTextColor(0xFFF4F7FF.toInt())
-            setOnCheckedChangeListener { _, checked -> fields.visibility = if (checked) View.VISIBLE else View.GONE }
         }
         card.addView(toggle, LinearLayout.LayoutParams(-1, dp(44)))
         card.addView(fields, LinearLayout.LayoutParams(-1, -2))
@@ -1296,15 +1295,38 @@ class MainActivity : Activity() {
         renderLocks()
         card.addView(lockSection, LinearLayout.LayoutParams(-1, -2))
 
-        val deleteWarning = label("سيُحذف الأصل نهائيًا بعد نجاح الإنشاء والتحقق، ويبقى الأرشيف فقط.", 11f, 0xFFFFB6B6.toInt(), false)
+        val protectNote = label(
+            "الحماية الفعلية: سيتم تشفير المحتوى بكلمة المرور، والتحقق من الأرشيف، ثم إزالة النسخة الأصلية من مكانها. سيبقى ملف QZRA المشفّر فقط؛ لذلك لن يفتح الملف أو المجلد الأصلي دون كلمة مرور لأنه لن يبقى كنسخة مكشوفة.",
+            11.5f, 0xFFFFD27A.toInt(), false
+        ).apply {
+            visibility = View.GONE
+            setPadding(dp(2), dp(8), dp(2), dp(4))
+        }
+        card.addView(protectNote)
+        val deleteWarning = label("سيُحذف الأصل بعد نجاح الإنشاء والتحقق. هذا الخيار غير مشفّر بحد ذاته؛ استخدم «حماية بكلمة مرور» لتشفير المحتوى.",
+            11f, 0xFFFFB6B6.toInt(), false)
             .apply { visibility = View.GONE; setPadding(dp(2), 0, dp(2), dp(2)) }
         val deleteBox = CheckBox(this).apply {
-            text = "حذف الأصل بعد الأرشفة (استبداله بالأرشيف)"
+            text = "حذف الأصل بعد إنشاء أرشيف عادي"
             textSize = 12.5f
             setTextColor(0xFFD8E5F8.toInt())
             buttonTintList = ColorStateList.valueOf(0xFFFF8A8A.toInt())
             setOnCheckedChangeListener { _, checked -> deleteWarning.visibility = if (checked) View.VISIBLE else View.GONE }
         }
+        fun updateProtectionOptions() {
+            val protected = toggle.isChecked || locks.isNotEmpty()
+            protectNote.visibility = if (protected) View.VISIBLE else View.GONE
+            deleteBox.visibility = if (protected) View.GONE else View.VISIBLE
+            if (protected) {
+                deleteBox.isChecked = false
+                deleteWarning.visibility = View.GONE
+            }
+        }
+        toggle.setOnCheckedChangeListener { _, checked ->
+            fields.visibility = if (checked) View.VISIBLE else View.GONE
+            updateProtectionOptions()
+        }
+        updateProtectionOptions()
         card.addView(deleteBox, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         card.addView(deleteWarning)
 
@@ -1327,7 +1349,7 @@ class MainActivity : Activity() {
             }
             val output = uniqueFile(currentDir, "$rawName.qzra")
             val hide = protect && (hideNames.isChecked || locks.isNotEmpty())
-            val removeOriginals = deleteBox.isChecked
+            val removeOriginals = protect || deleteBox.isChecked
             password.text?.clear(); confirm.text?.clear()
             dialog.dismiss()
             createArchiveFromFiles(sources, output, secret, hide, LinkedHashMap(locks), removeOriginals)
@@ -1364,16 +1386,28 @@ class MainActivity : Activity() {
                 )
                 val verified = ArchiveEngine.verify(output, password, locks)
                 require(verified.valid && verified.filesChecked == result.files) { "تعذر التحقق من الأرشيف بعد الإنشاء" }
+                val failedDeletions = ArrayList<String>()
                 var removed = 0
-                if (deleteOriginals) for (source in sources) if (source.deleteRecursively()) removed++
+                if (deleteOriginals) {
+                    for (source in sources) {
+                        val deleted = try { source.deleteRecursively() } catch (_: Exception) { false }
+                        if (deleted && !source.exists()) removed++ else failedDeletions.add(source.name)
+                    }
+                }
                 runOnUiThread {
-                    status.text = "تم إنشاء ${output.name} والتحقق منه ✓ (${verified.version}) • الملفات: ${result.files} • " +
-                        "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
-                        (if (locks.isNotEmpty()) " • مجلدات محمية: ${locks.size}" else "") +
-                        (if (deleteOriginals) " • حُذف الأصل ($removed)" else "") +
-                        " • أُضيف إلى مكتبة الأرشيف"
                     registerArchiveSources(output, sourcesWithKinds)
                     loadDirectory(currentDir)
+                    status.text = if (failedDeletions.isEmpty()) {
+                        "تم إنشاء ${output.name} والتحقق منه ✓ (${verified.version}) • الملفات: ${result.files} • " +
+                            "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
+                            (if (locks.isNotEmpty()) " • مجلدات محمية: ${locks.size}" else "") +
+                            (if (deleteOriginals) " • أزيل الأصل بعد التحقق ($removed)" else "") +
+                            " • أُضيف إلى مكتبة الأرشيف"
+                    } else {
+                        "تم إنشاء النسخة المشفّرة والتحقق منها، لكن تعذرت إزالة بعض النسخ الأصلية: " +
+                            failedDeletions.joinToString("، ") +
+                            ". هذه النسخ ما زالت غير محمية بكلمة المرور؛ احذفها يدويًا بعد التأكد من وجود ملف QZRA."
+                    }
                 }
             } catch (error: Exception) {
                 try { output.delete() } catch (_: Exception) { /* best effort */ }
