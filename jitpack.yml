@@ -1,0 +1,7 @@
+jdk:
+  - openjdk17
+
+# JitPack sets GROUP and VERSION for the selected GitHub repository/tag.
+# Publish only the SDK modules; native sources are attached to GitHub Releases.
+install:
+  - gradle --no-daemon --stacktrace :core:test :sdk:test :sdk-java:test :sdk-android:assembleRelease :core:publishToMavenLocal :sdk:publishToMavenLocal :sdk-java:publishToMavenLocal :sdk-android:publishToMavenLocal
