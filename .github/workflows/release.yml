@@ -75,7 +75,7 @@ jobs:
           --artifacts qamzor-core qamzor-sdk qamzor-java qamzor-android
       - name: Publish the matching GPG public key to a supported keyserver
         env:
-          SIGNING_KEY: \${{ secrets.SIGNING_KEY }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         shell: bash
         run: |
           set -euo pipefail
