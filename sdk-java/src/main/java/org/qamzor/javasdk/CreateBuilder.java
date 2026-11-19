@@ -49,7 +49,7 @@ public final class CreateBuilder {
     /** Creates the archive. @throws QamzorException on any failure */
     public CreateResult execute() {
         try {
-            ArchiveEngine.CreateResult r = ArchiveEngine.INSTANCE.create(
+            ArchiveEngine.CreateResult r = ArchiveEngine.create(
                     archive, sources, overwrite, password, encryptMetadata, new LinkedHashMap<>(folderPasswords));
             return new CreateResult(r.getArchive(), r.getEntries(), r.getFiles(), r.getOriginalBytes(), r.getStoredBytes());
         } catch (Exception e) {

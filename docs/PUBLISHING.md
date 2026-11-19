@@ -1,39 +1,214 @@
-# Publishing the SDKs
+# Publishing the QAMZOR SDKs
 
-JVM artifacts (published together at the same version): `qamzor-core`, `qamzor-sdk`, `qamzor-java`, `qamzor-android` (AAR).
-The Native SDK is **not** a Maven artifact: it ships as the source archive `libqzra-<version>.tar.gz` attached to the GitHub release.
+QAMZOR uses two distribution routes for JVM/Android libraries and a separate
+source release for Native C/C++:
 
-## What the pipeline does (`.github/workflows/release.yml`, on a `vX.Y.Z` tag)
+| Route | What it distributes | Domain required? |
+|---|---|---|
+| JitPack | Kotlin/JVM, Java and Android AAR artifacts built from this GitHub repository | No |
+| Maven Central | Signed, versioned Kotlin/JVM, Java and Android AAR artifacts | No, after the GitHub namespace is verified |
+| GitHub Release | Native C/C++ source archive, Compatibility Suite and registry | No |
 
-1. Runs **all** test workflows (Python reference + Compatibility Suite, Kotlin/Java tests on 3 OSes, Android build, native build/fuzz on Linux and macOS).
-2. Only if they all pass, in the `maven-central` environment (configure required reviewers): builds the four artifacts, signs
-   them with GPG (`signing` plugin) and stages them in `build/central-staging`.
-3. `tools/make_central_bundle.py` builds the Portal bundle and **refuses** if a file lacks a signature or sources/javadoc/pom is missing.
-4. Uploads the bundle to the Central Portal as `USER_MANAGED`: nothing goes live until a maintainer presses **Publish** in the portal.
+The SDKs are currently pre-1.0. A successful source build is not the same as a
+published or security-audited release.
 
-## One-time setup you must do (nothing here can be done for you)
+## 1. JitPack (first distribution route)
 
-- Create a Central Portal account (central.sonatype.com) and **verify a namespace**. The default group id `org.qamzor`
-  only works if you control the domain `qamzor.org`; otherwise use `io.github.<your-github-user>` and set `qamzor.groupId`
-  in `gradle.properties`. The Java/Kotlin package names do not have to match.
-- Generate a Portal user token and a GPG key; publish the public key to a key server.
-- GitHub repository secrets: `SIGNING_KEY` (ASCII-armored private key), `SIGNING_KEY_PASSWORD`, `CENTRAL_PORTAL_USERNAME`, `CENTRAL_PORTAL_TOKEN`.
-- GitHub repository variables (real values only): `POM_URL`, `POM_SCM_URL`, `POM_DEVELOPER_ID`, `POM_DEVELOPER_NAME`, `POM_DEVELOPER_EMAIL`.
-  The build fails with a clear message if any is missing; no placeholder metadata is generated.
-- Release: `git tag v0.8.0 && git push origin v0.8.0`. The Maven version is the tag without `v`; versions ending in `SNAPSHOT` are refused.
-  Keep `Qamzor.SDK_VERSION` in `sdk-java` equal to `VERSION_NAME` (a unit test checks this on normal builds).
+The root Gradle build reads JitPack's `GROUP` and `VERSION` environment
+variables when they are present. This is important because the published
+coordinates must use the repository and tag being built, not the Maven Central
+group or the development version in `gradle.properties`.
 
-## Local dry run
+The repository contains these Maven artifact IDs:
 
+| Gradle module | Published artifact ID | Intended consumer |
+|---|---|---|
+| `:core` | `qamzor-core` | Low-level Kotlin/JVM engine |
+| `:sdk` | `qamzor-sdk` | Kotlin/JVM facade |
+| `:sdk-java` | `qamzor-java` | Java 17+ and Kotlin applications |
+| `:sdk-android` | `qamzor-android` | Android applications (AAR) |
+
+The root `jitpack.yml` selects JDK 17 and builds/tests the SDK modules before
+publishing their Maven publications to the local Maven repository. JitPack
+then builds artifacts from the GitHub repository and tag. The first remote
+JitPack build must still be checked on JitPack; it is not claimed successful
+until its build page reports success.
+
+### Consumer setup (Gradle Kotlin DSL)
+
+Add JitPack after Maven Central in the consuming app's
+`settings.gradle.kts`:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
 ```
-gradle -Prelease=false -PVERSION_NAME=0.8.0 \
-  -Pqamzor.pom.url=... -Pqamzor.pom.scmUrl=... -Pqamzor.pom.developerId=... -Pqamzor.pom.developerName=... -Pqamzor.pom.developerEmail=... \
-  :core:publishMavenPublicationToCentralStagingRepository ...
+
+For a Java or Kotlin/JVM application:
+
+```kotlin
+dependencies {
+    implementation("com.github.ibra8y3-web.QAMZOR:qamzor-java:<TAG>")
+}
 ```
-Signatures are only created when a key is supplied (`-Prelease` makes signing mandatory).
 
-## Honest status
+For an Android application:
 
-The publishing convention (`gradle/publishing.gradle`), the Portal upload step and the Android AAR build have **not been executed**:
-the authoring environment had no Gradle, Android SDK or network access. The bundle builder is unit-tested (`tests/test_central_bundle.py`).
-Expect to fix small things on the first CI run; do the first release as a tag on a throw-away version and inspect the Portal deployment before pressing Publish.
+```kotlin
+dependencies {
+    implementation("com.github.ibra8y3-web.QAMZOR:qamzor-android:<TAG>")
+}
+```
+
+For the Kotlin facade directly:
+
+```kotlin
+dependencies {
+    implementation("com.github.ibra8y3-web.QAMZOR:qamzor-sdk:<TAG>")
+}
+```
+
+Replace `<TAG>` with an actual Git tag published by this repository, for
+example the exact tag shown on its JitPack page. Do not copy the placeholder
+literally. For an initial smoke test after these changes are merged into
+`main`, JitPack also supports the branch version `main-SNAPSHOT`; this avoids
+creating a `v*` tag and therefore does not start the Maven Central release
+workflow. Use a fixed tag for reproducible versioned releases. The Android
+artifact exposes the Java SDK and Kotlin Core as transitive API dependencies.
+
+The Native SDK is not a Maven artifact. Its source package is attached to the
+GitHub Release as `libqzra-<version>.tar.gz` with a SHA-256 checksum.
+
+## 2. Maven Central (permanent public coordinates)
+
+The GitHub account that owns this repository is `ibra8y3-web`. The configured
+Maven Central groupId is therefore:
+
+```text
+io.github.ibra8y3-web
+```
+
+The hyphen is valid in a Maven groupId and does not need to appear in Java or
+Kotlin package names.
+
+One-time maintainer steps:
+
+1. Sign in to [Sonatype Central Portal](https://central.sonatype.com/) using
+   **Continue with GitHub** and the GitHub account `ibra8y3-web`.
+2. Open **View Namespaces**. Sonatype documents automatic provisioning of a
+   verified `io.github.<username>` namespace when the account signs in through
+   GitHub. For this repository the expected value is
+   `io.github.ibra8y3-web`. Confirm that the Portal actually lists it as
+   **Verified** before publishing; repository files cannot prove the private
+   account's Portal status.
+3. Generate a Central Portal user token at
+   [User Tokens](https://central.sonatype.com/usertoken). Save the displayed
+   token credentials immediately; Sonatype does not show them again after the
+   dialog closes.
+4. Generate a GPG signing key on your own trusted computer, keep its private
+   key private, and publish only the public key to a public key server.
+   Follow [Sonatype's GPG guide](https://central.sonatype.org/publish/requirements/gpg/).
+5. Add the following GitHub repository **Secrets** at
+   [Settings → Secrets and variables → Actions](https://github.com/ibra8y3-web/QAMZOR/settings/secrets/actions):
+   - `SIGNING_KEY`: ASCII-armored private GPG key.
+   - `SIGNING_KEY_PASSWORD`: password protecting that key.
+   - `CENTRAL_PORTAL_USERNAME`: username from the generated Portal token.
+   - `CENTRAL_PORTAL_TOKEN`: token password from the generated Portal token.
+6. Add these GitHub repository **Variables** under the same Settings page, in
+   the **Variables** tab, with real maintainer details:
+   - `POM_URL`: `https://github.com/ibra8y3-web/QAMZOR`
+   - `POM_SCM_URL`: `https://github.com/ibra8y3-web/QAMZOR.git`
+   - `POM_DEVELOPER_ID`: `ibra8y3-web`
+   - `POM_DEVELOPER_NAME`: maintainer's preferred public name.
+   - `POM_DEVELOPER_EMAIL`: maintainer's public contact email.
+
+Do not send the token or private key in chat, commit them to Git, place them in
+workflow YAML, or add them as ordinary Variables. Put secrets only in the
+GitHub Secrets form. The release workflow requires the `maven-central` GitHub Environment; configure
+a required reviewer there so the Portal upload is reviewed before publication.
+
+### Release flow
+
+The `.github/workflows/release.yml` workflow runs for tags matching `v*`.
+It first runs Python tests, Kotlin/Java/Android builds and the Native
+Compatibility Suite. Only after those pass does it:
+
+- Build and GPG-sign `qamzor-core`, `qamzor-sdk`, `qamzor-java` and
+  `qamzor-android`.
+- Validate that the Central bundle contains POM, source/Javadoc artifacts
+  and signatures.
+- Upload the bundle to Sonatype as a **USER_MANAGED** deployment. It does not
+  publish the artifacts live automatically; the maintainer must inspect the
+  deployment in Central Portal and press **Publish**.
+
+The Native source archive is attached to the matching GitHub Release.
+
+Do not create a release tag until the first CI run passes and every required
+Secret, Variable, namespace and environment approval is configured. The release
+version comes from the tag without the leading `v`; versions ending in
+`SNAPSHOT` are rejected. The SDK remains pre-1.0 until the project explicitly
+declares a stable API.
+
+## 3. Prepare the GPG key and secrets safely
+
+Run the following on your own computer after installing GnuPG; do not run it in
+GitHub Actions and do not send the private-key output to anyone:
+
+```sh
+gpg --full-generate-key
+gpg --list-secret-keys --keyid-format LONG
+# Replace KEY_ID with the long key ID shown above.
+gpg --armor --export KEY_ID
+gpg --armor --export-secret-keys KEY_ID
+```
+
+Publish the **public** key (`--export`) to a public key server, as described by
+Sonatype. Put the **secret** key (`--export-secret-keys`) in the GitHub Secret
+`SIGNING_KEY`; put the key passphrase in `SIGNING_KEY_PASSWORD`. The Portal token
+must be split into `CENTRAL_PORTAL_USERNAME` and `CENTRAL_PORTAL_TOKEN` exactly
+as shown by Sonatype. Never paste any of these values into this chat.
+
+The workflow expects these repository Secrets:
+
+- `SIGNING_KEY`
+- `SIGNING_KEY_PASSWORD`
+- `CENTRAL_PORTAL_USERNAME`
+- `CENTRAL_PORTAL_TOKEN`
+
+And these repository Variables:
+
+- `POM_URL`
+- `POM_SCM_URL`
+- `POM_DEVELOPER_ID`
+- `POM_DEVELOPER_NAME`
+- `POM_DEVELOPER_EMAIL`
+
+## 4. Local/CI publishing checks
+
+The reusable workflow
+`.github/workflows/sdk-publishing-check.yml` simulates JitPack's coordinates
+with:
+
+- `GROUP=com.github.ibra8y3-web.QAMZOR`
+- `VERSION=0.0.0-ci`
+
+It tests the SDK, builds the Android AAR, publishes the four artifacts to
+Maven Local and verifies the generated POM/binary files. A passing check validates
+the Gradle coordinates and publication configuration, but it does not replace
+the first real JitPack build or a Maven Central Portal deployment.
+
+## 5. Platform and security boundaries
+
+- Native C/C++ is currently read-only and does not create QZRA archives.
+- Native CI targets Linux and macOS; Windows support is not claimed.
+- The Android AAR requires Android API 26+ and Java 17 toolchain compatibility.
+- Kotlin/Java/Android acceptance depends on GitHub Actions. Do not describe a
+  module as release-ready until the current CI run passes.
+- QZRA has not received an independent security audit. Users should keep
+  independent backups and should not use this development release as the only
+  copy of important data.

@@ -4,6 +4,48 @@ java {
     toolchain { languageVersion.set(JavaLanguageVersion.of(17)) }
 }
 
+// Generate the SDK version from the actual Gradle project version. This keeps
+// Qamzor.SDK_VERSION aligned with JitPack tags and Maven Central release tags.
+val generatedVersionSourceDir = layout.buildDirectory.dir("generated/sources/qamzorVersion/java/main")
+val generateQamzorVersion = tasks.register("generateQamzorVersion") {
+    val outputFile = generatedVersionSourceDir.map {
+        it.file("org/qamzor/javasdk/QamzorVersion.java")
+    }
+    inputs.property("version", project.version.toString())
+    outputs.file(outputFile)
+    doLast {
+        val version = project.version.toString()
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+        val file = outputFile.get().asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """package org.qamzor.javasdk;
+
+final class QamzorVersion {
+    static final String VALUE = "$version";
+
+    private QamzorVersion() { }
+}
+"""
+        )
+    }
+}
+
+sourceSets {
+    main {
+        java.srcDir(generatedVersionSourceDir)
+    }
+}
+
+tasks.named<JavaCompile>("compileJava") {
+    dependsOn(generateQamzorVersion)
+}
+
+tasks.withType<Jar>().matching { it.name == "sourcesJar" }.configureEach {
+    dependsOn(generateQamzorVersion)
+}
+
 dependencies {
     api(project(":core"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")

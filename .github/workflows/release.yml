@@ -17,10 +17,12 @@ jobs:
     uses: ./.github/workflows/platform-builds.yml
   native:
     uses: ./.github/workflows/native.yml
+  sdk-publishing-check:
+    uses: ./.github/workflows/sdk-publishing-check.yml
 
   publish-maven-central:
     name: Sign and stage Maven Central bundle
-    needs: [python-tests, platform-builds, native]
+    needs: [python-tests, platform-builds, native, sdk-publishing-check]
     runs-on: ubuntu-latest
     environment: maven-central      # configure required reviewers on this environment
     env:
@@ -81,7 +83,7 @@ jobs:
 
   native-source-release:
     name: Native SDK source archive
-    needs: [python-tests, platform-builds, native]
+    needs: [python-tests, platform-builds, native, sdk-publishing-check]
     runs-on: ubuntu-latest
     permissions:
       contents: write

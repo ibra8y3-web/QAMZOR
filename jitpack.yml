@@ -1,0 +1,12 @@
+jdk:
+  - openjdk17
+
+# Pin the build tool: this repository does not check in a Gradle Wrapper.
+before_install:
+  - sdk install gradle 8.9
+  - sdk use gradle 8.9
+
+# JitPack sets JITPACK=true, GROUP and VERSION for the selected GitHub ref.
+# Publish only the SDK modules; native sources are attached to GitHub Releases.
+install:
+  - gradle --no-daemon --stacktrace :core:test :sdk:test :sdk-java:test :sdk-android:assembleRelease :core:publishToMavenLocal :sdk:publishToMavenLocal :sdk-java:publishToMavenLocal :sdk-android:publishToMavenLocal
