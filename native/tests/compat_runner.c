@@ -1,8 +1,6 @@
 /* QAMZOR Compatibility Suite runner for the Native SDK.
  * Usage: compat_runner <path-to-compat-directory>
  * Exit status 0 only if every vector in manifest.json behaves exactly as specified. */
-/* Expose Darwin's POSIX-compatible mkdtemp declaration on macOS CI. */
-#define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 #include "qzra.h"
@@ -13,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h> /* macOS 26 declares mkdtemp here. */
 #include <openssl/evp.h>
 
 static char *slurp(const char *path, size_t *len) {
