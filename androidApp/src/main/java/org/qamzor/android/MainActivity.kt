@@ -42,6 +42,11 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var pageTitle: TextView
     private lateinit var fileToolbar: LinearLayout
+    private lateinit var fileControls: LinearLayout
+    private lateinit var fileSearchField: EditText
+    private lateinit var fileFilterRow: LinearLayout
+    private lateinit var fileSortButton: TextView
+    private lateinit var fileViewButton: TextView
     private lateinit var fileListContainer: LinearLayout
     private lateinit var fileScroll: ScrollView
     private lateinit var permissionCard: View
@@ -60,6 +65,10 @@ class MainActivity : Activity() {
     private var browseRoot: File = storageRoot
     private var currentDir: File = storageRoot
     private var currentItems: List<File> = emptyList()
+    private var fileSearchQuery: String = ""
+    private var fileFilter: String = "all"
+    private var fileSortMode: String = "name"
+    private var gridViewEnabled: Boolean = false
     private val selection = LinkedHashSet<File>()
 
     private val backgroundTaskLock = Any()
@@ -150,6 +159,7 @@ class MainActivity : Activity() {
         permissionCard.visibility = if (needed) View.VISIBLE else View.GONE
         fileScroll.visibility = if (needed) View.GONE else View.VISIBLE
         fileToolbar.visibility = if (needed) View.GONE else View.VISIBLE
+        fileControls.visibility = if (needed) View.GONE else View.VISIBLE
     }
 
     private fun operationPreferences() = getSharedPreferences("qamzor-operation-center", Context.MODE_PRIVATE)
@@ -316,6 +326,77 @@ class MainActivity : Activity() {
             setPaddingRelative(dp(8), dp(4), dp(8), dp(4))
         }
         column.addView(fileToolbar, LinearLayout.LayoutParams(-1, dp(54)))
+
+        fileControls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(12), dp(2), dp(12), dp(8))
+        }
+        fileSearchField = EditText(this).apply {
+            hint = "ابحث في هذا المجلد..."
+            setHintTextColor(0xFF8FA4C8.toInt())
+            setTextColor(0xFFF4F7FF.toInt())
+            textSize = 13f
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            setSingleLine(true)
+            background = rounded(0xFF1D3152.toInt(), 11)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    fileSearchQuery = s?.toString().orEmpty()
+                    if (::fileListContainer.isInitialized && currentItems.isNotEmpty()) renderFileList(currentItems, false)
+                }
+                override fun afterTextChanged(s: android.text.Editable?) = Unit
+            })
+        }
+        fileControls.addView(fileSearchField, LinearLayout.LayoutParams(-1, dp(44)))
+
+        val filterScroller = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(0, dp(7), 0, dp(5))
+        }
+        fileFilterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        filterScroller.addView(fileFilterRow)
+        fileControls.addView(filterScroller, LinearLayout.LayoutParams(-1, dp(48)))
+
+        val fileActionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        fileSortButton = label("", 11.5f, 0xFFE6EEFC.toInt(), true).apply {
+            gravity = Gravity.CENTER
+            background = rounded(0xFF263D63.toInt(), 10)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showFileSortDialog() }
+        }
+        fileViewButton = label("", 11.5f, 0xFFE6EEFC.toInt(), true).apply {
+            gravity = Gravity.CENTER
+            background = rounded(0xFF263D63.toInt(), 10)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                gridViewEnabled = !gridViewEnabled
+                renderFileControls()
+                refreshFileViews()
+            }
+        }
+        fileActionRow.addView(fileSortButton, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(5) })
+        fileActionRow.addView(fileViewButton, LinearLayout.LayoutParams(dp(116), dp(38)).apply { marginStart = dp(5) })
+        fileControls.addView(fileActionRow, LinearLayout.LayoutParams(-1, dp(42)))
+        column.addView(fileControls, LinearLayout.LayoutParams(-1, -2))
+        renderFileControls()
+
         fileListContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(2), dp(12), dp(16))
@@ -407,6 +488,96 @@ class MainActivity : Activity() {
         fileScroll.post { fileScroll.scrollTo(0, y) }
     }
 
+    private fun renderFileControls() {
+        if (!::fileFilterRow.isInitialized) return
+        fileFilterRow.removeAllViews()
+        val filters = listOf(
+            "all" to "الكل",
+            "folders" to "مجلدات",
+            "qzra" to "QZRA",
+            "images" to "صور",
+            "documents" to "مستندات"
+        )
+        for ((key, caption) in filters) {
+            val selected = fileFilter == key
+            val chip = label(caption, 11.5f, if (selected) 0xFFFFFFFF.toInt() else 0xFFBBD2FF.toInt(), selected).apply {
+                gravity = Gravity.CENTER
+                background = rounded(if (selected) 0xFF3F6FD8.toInt() else 0xFF1D3152.toInt(), 10)
+                setPadding(dp(13), dp(7), dp(13), dp(7))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    fileFilter = key
+                    renderFileControls()
+                    refreshFileViews()
+                }
+            }
+            fileFilterRow.addView(chip, LinearLayout.LayoutParams(-2, dp(36)).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            })
+        }
+        fileSortButton.text = "ترتيب: " + when (fileSortMode) {
+            "date" -> "التاريخ"
+            "size" -> "الحجم"
+            else -> "الاسم"
+        }
+        fileViewButton.text = if (gridViewEnabled) "عرض قائمة" else "عرض شبكة"
+    }
+
+    private fun showFileSortDialog() {
+        val options = arrayOf("الاسم", "التاريخ", "الحجم")
+        val selected = when (fileSortMode) {
+            "date" -> 1
+            "size" -> 2
+            else -> 0
+        }
+        AlertDialog.Builder(this)
+            .setTitle("ترتيب الملفات")
+            .setSingleChoiceItems(options, selected) { dialog, which ->
+                fileSortMode = when (which) {
+                    1 -> "date"
+                    2 -> "size"
+                    else -> "name"
+                }
+                dialog.dismiss()
+                renderFileControls()
+                refreshFileViews()
+            }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    private fun filteredAndSortedFiles(items: List<File>): List<File> {
+        val query = fileSearchQuery.trim().lowercase(Locale.ROOT)
+        val filtered = items.filter { file ->
+            val matchesSearch = query.isEmpty() || file.name.lowercase(Locale.ROOT).contains(query)
+            val extension = file.extension.lowercase(Locale.ROOT)
+            val matchesFilter = when (fileFilter) {
+                "folders" -> file.isDirectory
+                "qzra" -> isQzra(file)
+                "images" -> file.isFile && extension in IMAGE_EXTENSIONS
+                "documents" -> file.isFile && extension in DOCUMENT_EXTENSIONS
+                else -> true
+            }
+            matchesSearch && matchesFilter
+        }
+        val comparator = when (fileSortMode) {
+            "date" -> compareBy<File> { !it.isDirectory }
+                .thenByDescending { it.lastModified() }
+                .thenBy { it.name.lowercase(Locale.ROOT) }
+                .thenBy { it.name }
+            "size" -> compareBy<File> { !it.isDirectory }
+                .thenByDescending { if (it.isFile) it.length() else 0L }
+                .thenBy { it.name.lowercase(Locale.ROOT) }
+                .thenBy { it.name }
+            else -> compareBy<File> { !it.isDirectory }
+                .thenBy { it.name.lowercase(Locale.ROOT) }
+                .thenBy { it.name }
+        }
+        return filtered.sortedWith(comparator)
+    }
+
     private fun loadDirectory(dir: File) {
         if (!hasStorageAccess()) {
             showPermissionState(true)
@@ -415,6 +586,10 @@ class MainActivity : Activity() {
         showPermissionState(false)
         currentDir = dir
         selection.clear()
+        fileSearchQuery = ""
+        fileFilter = "all"
+        if (::fileSearchField.isInitialized && fileSearchField.text.isNotEmpty()) fileSearchField.setText("")
+        renderFileControls()
         renderToolbar()
         Thread {
             val raw = try { dir.listFiles() } catch (_: Exception) { null }
@@ -444,9 +619,80 @@ class MainActivity : Activity() {
                 .apply { setPadding(dp(6), dp(24), dp(6), dp(24)); gravity = Gravity.CENTER })
             return
         }
-        for (file in items) {
-            fileListContainer.addView(fileRow(file), LinearLayout.LayoutParams(-1, dp(62)).apply { bottomMargin = dp(6) })
+        val visibleItems = filteredAndSortedFiles(items)
+        if (visibleItems.isEmpty()) {
+            fileListContainer.addView(label("لا توجد ملفات أو مجلدات تطابق البحث أو الفلتر المحدد.", 12.5f, 0xFF9FB4D3.toInt(), false)
+                .apply { setPadding(dp(6), dp(24), dp(6), dp(24)); gravity = Gravity.CENTER })
+            return
         }
+        if (!gridViewEnabled) {
+            for (file in visibleItems) {
+                fileListContainer.addView(fileRow(file), LinearLayout.LayoutParams(-1, dp(62)).apply { bottomMargin = dp(6) })
+            }
+            return
+        }
+        for (rowItems in visibleItems.chunked(2)) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+            }
+            for ((index, file) in rowItems.withIndex()) {
+                row.addView(fileGridCard(file), LinearLayout.LayoutParams(0, dp(126), 1f).apply {
+                    if (index == 0) marginEnd = dp(4) else marginStart = dp(4)
+                })
+            }
+            if (rowItems.size == 1) {
+                row.addView(View(this), LinearLayout.LayoutParams(0, dp(126), 1f).apply { marginStart = dp(4) })
+            }
+            fileListContainer.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        }
+    }
+
+    private fun fileGridCard(file: File): View {
+        val style = typeStyle(file)
+        val selected = selection.contains(file)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(9), dp(8), dp(9), dp(8))
+            background = rounded(if (selected) 0xFF27457A.toInt() else 0xFF14223F.toInt(), 14)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onFileTap(file) }
+            setOnLongClickListener { toggleSelection(file); true }
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        top.addView(
+            if (selected) iconBadge("check", COLOR_ACCENT, 0xFFFFFFFF.toInt(), 38)
+            else iconBadge(style.first, style.second, style.third, 38),
+            LinearLayout.LayoutParams(dp(38), dp(38))
+        )
+        top.addView(View(this), LinearLayout.LayoutParams(0, dp(36), 1f))
+        top.addView(toolbarButton("more", "خيارات ${file.name}", 0xFF9FB4D3.toInt()) {
+            showItemSheet(file)
+        }, LinearLayout.LayoutParams(dp(32), dp(36)))
+        card.addView(top)
+        card.addView(label(file.name, 12.5f, 0xFFF4F7FF.toInt(), true).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            setPadding(0, dp(5), 0, 0)
+        }, LinearLayout.LayoutParams(-1, -2))
+        val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(file.lastModified()))
+        val detail = when {
+            file.isDirectory -> "مجلد • $date"
+            isQzra(file) -> "QZRA • ${formatBytes(file.length())}"
+            else -> "${formatBytes(file.length())} • $date"
+        }
+        card.addView(label(detail, 9.5f, 0xFF9FB4D3.toInt(), false).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setSingleLine(true)
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
+        return card
     }
 
     private fun isQzra(file: File): Boolean = file.isFile && file.name.endsWith(".qzra", ignoreCase = true)
@@ -1097,11 +1343,15 @@ class MainActivity : Activity() {
                 var removed = 0
                 if (deleteOriginals) for (source in sources) if (source.deleteRecursively()) removed++
                 runOnUiThread {
-                    status.text = "تم إنشاء ${output.name} ✓ (${verified.version}) • الملفات: ${result.files} • " +
+                    status.text = "تم إنشاء ${output.name} والتحقق منه ✓ (${verified.version}) • الملفات: ${result.files} • " +
                         "${formatBytes(result.originalBytes)} ← ${formatBytes(result.storedBytes)}" +
                         (if (locks.isNotEmpty()) " • مجلدات محمية: ${locks.size}" else "") +
                         (if (deleteOriginals) " • حُذف الأصل ($removed)" else "")
                     loadDirectory(currentDir)
+                    installOpenedArchive(output, output.name, password, locks.keys.toSet(), false)
+                    openedFolderPasswords.putAll(locks)
+                    selectTab(1)
+                    showVirtualExplorer("")
                 }
             } catch (error: Exception) {
                 try { output.delete() } catch (_: Exception) { /* best effort */ }
@@ -1169,7 +1419,10 @@ class MainActivity : Activity() {
         explorerPath = path
         explorerContainer.removeAllViews()
         archiveInfoText.text = openedArchiveLabel.ifEmpty { "أرشيف QZRA" }
-        explorerPathText.text = if (path.isBlank()) "/  •  ${children.size} عنصر" else "/$path  •  ${children.size} عنصر"
+        val folderCount = children.count { it.type == "directory" }
+        val fileCount = children.size - folderCount
+        val itemSummary = "${children.size} عنصر • $folderCount مجلد • $fileCount ملف"
+        explorerPathText.text = if (path.isBlank()) "/  •  $itemSummary" else "/$path  •  $itemSummary"
         if (path.isNotBlank()) {
             explorerContainer.addView(
                 explorerRow("up", "المجلد السابق", "", false, { showVirtualExplorer(path.substringBeforeLast('/', "")) }),
@@ -1222,7 +1475,8 @@ class MainActivity : Activity() {
     private fun showVirtualExplorer(path: String) {
         val archive = openedArchive ?: return
         runOnWorker("تعذر قراءة مجلد الأرشيف") {
-            val children = ArchiveEngine.browse(archive, path, openedArchivePassword)
+            val folderPasswords = synchronized(openedFolderPasswords) { openedFolderPasswords.toMap() }
+            val children = ArchiveEngine.browse(archive, path, openedArchivePassword, folderPasswords)
             runOnUiThread { renderExplorer(path, children) }
         }
     }
@@ -1978,6 +2232,8 @@ class MainActivity : Activity() {
         private val NAV_IDLE = 0xFF8FA4C8.toInt()
         private val TAB_TITLES = listOf("الملفات", "الأرشيف المفتوح", "سجل العمليات")
         private val TEXT_EXTENSIONS = setOf("txt", "md", "csv", "tsv", "json", "xml", "html", "htm", "css", "js", "ts", "py", "kt", "java", "yaml", "yml", "toml", "ini", "properties", "sh", "sql", "log")
+        private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "tif", "tiff")
+        private val DOCUMENT_EXTENSIONS = setOf("pdf", "doc", "docx", "odt", "rtf", "txt", "md", "csv", "tsv", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "json", "xml")
         private const val REQUEST_BROWSE = 23
         private const val REQUEST_OUTPUT_TREE = 25
         private const val REQUEST_ALL_FILES = 30
