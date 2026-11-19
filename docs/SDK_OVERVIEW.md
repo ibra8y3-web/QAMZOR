@@ -2,10 +2,10 @@
 
 | SDK | Module / path | Language | Capabilities | Status |
 |---|---|---|---|---|
-| Kotlin SDK | `:sdk` (`org.qamzor:qamzor-sdk`) | Kotlin/JVM | create, list, verify, compare, extract (QZRA 1.0-1.3) | existing; tests run in CI |
-| **Java SDK** | `:sdk-java` (`org.qamzor:qamzor-java`) | Java 17+ | fluent create/open API, browse, verified preview, selective extract, typed `ErrorCategory` | new; compiles against the core's signatures, **CI must run its tests** |
-| **Android SDK (AAR)** | `:sdk-android` (`org.qamzor:qamzor-android`) | Kotlin, minSdk 26 | open from content URI, create from documents/folders, extract into a SAF folder | new; **not compiled yet** (needs the Android SDK in CI) |
-| **Native SDK** | `native/` (`libqzra`) | C11 / C++17 | open, unlock folders, list, verify, extract (read-only) | new; **verified locally** (see `native/README.md`) |
+| Kotlin SDK | `:sdk` (`qamzor-sdk`) | Kotlin/JVM | create, list, verify, compare, extract (QZRA 1.0–1.3) | CI verification pending |
+| **Java SDK** | `:sdk-java` (`qamzor-java`) | Java 17+ | fluent create/open API, browse, verified preview, selective extract, typed `ErrorCategory` | CI verification pending |
+| **Android SDK (AAR)** | `:sdk-android` (`qamzor-android`) | Kotlin, minSdk 26 | open from content URI, create from documents/folders, extract into a SAF folder | CI verification pending |
+| **Native SDK** | `native/` (`libqzra`) | C11 / C++17 | open, unlock folders, list, verify, extract (read-only) | Linux compatibility/sanitizer checks recorded; macOS CI pending |
 
 Supporting assets: **File Format Registry** (`registry/`), **Compatibility Suite** (`compat/`).
 
@@ -37,3 +37,61 @@ qamzor.openArchive(archiveUri).use { archive ->
     qamzor.extractToTree(archive, destinationTreeUri)
 }
 ```
+
+
+## Distribution: JitPack and Maven Central
+
+The JVM and Android modules are prepared for two publishing routes. They are
+not publicly released yet; use a real tag/version only after the CI checks pass.
+
+### JitPack
+
+JitPack uses the GitHub repository and a tag or snapshot. Add the repository to
+the consuming project's `settings.gradle.kts`:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
+```
+
+Then add one of these dependencies (replace `<TAG>` with a tag that has
+successfully built on JitPack):
+
+```kotlin
+dependencies {
+    // Java 17+ or Kotlin/JVM:
+    implementation("com.github.ibra8y3-web.QAMZOR:qamzor-java:<TAG>")
+
+    // Kotlin facade:
+    implementation("com.github.ibra8y3-web.QAMZOR:qamzor-sdk:<TAG>")
+
+    // Android AAR (minSdk 26+):
+    implementation("com.github.ibra8y3-web.QAMZOR:qamzor-android:<TAG>")
+}
+```
+
+### Maven Central
+
+After the GitHub namespace is shown as Verified in the Sonatype Central
+Portal, the expected groupId is `io.github.ibra8y3-web`. After a signed
+release is accepted and published in the Portal, use Maven Central normally
+(no JitPack repository is needed):
+
+```kotlin
+dependencies {
+    implementation("io.github.ibra8y3-web:qamzor-java:<VERSION>")
+    implementation("io.github.ibra8y3-web:qamzor-sdk:<VERSION>")
+    implementation("io.github.ibra8y3-web:qamzor-android:<VERSION>")
+}
+```
+
+The Android AAR exposes the Java SDK and Kotlin Core as API dependencies.
+Native is distributed separately as the `libqzra-<VERSION>.tar.gz` source
+archive attached to a GitHub Release; it is not a Maven artifact and is
+currently read-only. See [Publishing guide](PUBLISHING.md) for the complete
+secret, GPG, Portal token and release setup.
