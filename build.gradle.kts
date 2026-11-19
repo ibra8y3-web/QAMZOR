@@ -6,14 +6,19 @@ plugins {
     id("com.android.library") version "8.7.3" apply false
 }
 
-// JitPack supplies GROUP and VERSION for the Git repository build.
+// JitPack sets JITPACK=true together with GROUP and VERSION.
 // Normal builds and Maven Central releases use the explicit Gradle properties.
-val sdkGroup = providers.environmentVariable("GROUP")
-    .orElse(providers.gradleProperty("qamzor.groupId"))
-    .get()
-val sdkVersion = providers.environmentVariable("VERSION")
-    .orElse(providers.gradleProperty("VERSION_NAME"))
-    .get()
+val isJitPackBuild = providers.environmentVariable("JITPACK").orNull == "true"
+val sdkGroup = if (isJitPackBuild) {
+    providers.environmentVariable("GROUP").get()
+} else {
+    providers.gradleProperty("qamzor.groupId").get()
+}
+val sdkVersion = if (isJitPackBuild) {
+    providers.environmentVariable("VERSION").get()
+} else {
+    providers.gradleProperty("VERSION_NAME").get()
+}
 
 allprojects {
     group = sdkGroup
