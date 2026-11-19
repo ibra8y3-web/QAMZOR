@@ -1095,7 +1095,7 @@ class MainActivity : Activity() {
                     name.isEmpty() || name.contains('/') -> { status.text = "الاسم غير صالح." }
                     target.exists() -> { status.text = "يوجد عنصر بنفس الاسم." }
                     file.renameTo(target) -> {
-                        if (isQzra(file)) updateArchiveLibraryPath(file, target)
+                        if (file.name.endsWith(".qzra", ignoreCase = true)) updateArchiveLibraryPath(file, target)
                         status.text = "تمت إعادة التسمية."
                         loadDirectory(currentDir)
                     }
@@ -1482,7 +1482,7 @@ class MainActivity : Activity() {
     private fun registerArchiveSources(archive: File, sources: List<Pair<File, String>>) {
         val createdAt = System.currentTimeMillis()
         for ((index, source) in sources.withIndex()) {
-            val id = "\$createdAt-\$index-\${archive.name}"
+            val id = "$createdAt-$index-${archive.name}"
             archiveLibraryEntries.removeAll { it.id == id }
             archiveLibraryEntries.add(
                 ArchiveLibraryEntry(id, archive.absolutePath, source.first.name, source.second, createdAt)
@@ -1515,8 +1515,8 @@ class MainActivity : Activity() {
             .sortedByDescending { it.createdAt }
         val title = if (selectedKind == "files") "الملفات المؤرشفة" else "المجلدات المؤرشفة"
         val available = entries.count { File(it.archivePath).isFile }
-        archiveInfoText.text = "\$title • \${entries.size} عنصر"
-        explorerPathText.text = "المحفوظات ثابتة هنا حتى بعد الخروج من القسم أو إغلاق التطبيق • المتاح: \$available"
+        archiveInfoText.text = "$title • ${entries.size} عنصر"
+        explorerPathText.text = "المحفوظات ثابتة هنا حتى بعد الخروج من القسم أو إغلاق التطبيق • المتاح: $available"
 
         if (entries.isEmpty()) {
             val emptyIcon = if (selectedKind == "files") "file" else "folder"
@@ -1558,7 +1558,7 @@ class MainActivity : Activity() {
             isFocusable = true
             setOnClickListener {
                 if (exists) openArchiveFile(archive, archive.name, false)
-                else status.text = "ملف الأرشيف الأصلي غير موجود: \${entry.archivePath}"
+                else status.text = "ملف الأرشيف الأصلي غير موجود: ${entry.archivePath}"
             }
             setOnLongClickListener {
                 showArchiveLibraryActions(entry)
@@ -1581,9 +1581,9 @@ class MainActivity : Activity() {
         val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM)
             .format(java.util.Date(entry.createdAt))
         val detail = if (exists) {
-            "\${archive.name} • \${formatBytes(archive.length())} • \$date"
+            "${archive.name} • ${formatBytes(archive.length())} • $date"
         } else {
-            "ملف الأرشيف غير موجود في مكانه الأصلي • \$date"
+            "ملف الأرشيف غير موجود في مكانه الأصلي • $date"
         }
         texts.addView(label(detail, 9.5f, if (exists) 0xFF9FB4D3.toInt() else 0xFFFFB6B6.toInt(), false).apply {
             maxLines = 1
@@ -1591,7 +1591,7 @@ class MainActivity : Activity() {
             setSingleLine(true)
         })
         row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(toolbarButton("more", "خيارات \${entry.originalName}", 0xFF9FB4D3.toInt()) {
+        row.addView(toolbarButton("more", "خيارات ${entry.originalName}", 0xFF9FB4D3.toInt()) {
             showArchiveLibraryActions(entry)
         }, LinearLayout.LayoutParams(dp(34), dp(42)))
         return row
@@ -1616,7 +1616,7 @@ class MainActivity : Activity() {
             actions += SheetAction("trash", "حذف ملف الأرشيف وكل سجلاته", true) {
                 AlertDialog.Builder(this)
                     .setTitle("حذف الأرشيف نهائيًا")
-                    .setMessage("سيتم حذف \${archive.name} من الهاتف وإزالة كل العناصر المرتبطة به من قائمة المحفوظات.")
+                    .setMessage("سيتم حذف ${archive.name} من الهاتف وإزالة كل العناصر المرتبطة به من قائمة المحفوظات.")
                     .setPositiveButton("حذف نهائيًا") { _, _ ->
                         if (archive.delete() || !archive.exists()) {
                             archiveLibraryEntries.removeAll { it.archivePath == entry.archivePath }
@@ -1649,7 +1649,7 @@ class MainActivity : Activity() {
     }
 
     private fun forgetDeletedArchives(files: List<File>) {
-        val paths = files.filter { isQzra(it) }.map { it.absolutePath }.toSet()
+        val paths = files.filter { it.name.endsWith(".qzra", ignoreCase = true) }.map { it.absolutePath }.toSet()
         if (paths.isEmpty()) return
         if (archiveLibraryEntries.removeAll { it.archivePath in paths }) {
             persistArchiveLibrary()
