@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Added File Format Registry (`registry/`), Compatibility Suite (`compat/`, 18 vectors), Native SDK `libqzra` (`native/`), Java SDK (`:sdk-java`), Android SDK AAR module (`:sdk-android`), Maven publishing convention and release workflow. See `docs/SDK_OVERVIEW.md` and `docs/PUBLISHING.md`.
+
 ## 0.9.0-dev — Built-in file manager (2026-11-07)
 
 - Android: new Files tab that browses phone storage directly (internal + external volumes) like RAR; needs "All files access" (MANAGE_EXTERNAL_STORAGE; READ/WRITE on older Android). No INTERNET permission.

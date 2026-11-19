@@ -10,3 +10,9 @@ dependencies {
 }
 
 tasks.test { useJUnitPlatform() }
+
+extra["qamzorArtifactId"] = "qamzor-sdk"
+extra["qamzorDescription"] = "QAMZOR Kotlin SDK facade over qamzor-core"
+extra["qamzorEmptyJavadoc"] = true
+apply(from = rootProject.file("gradle/publishing.gradle"))
+

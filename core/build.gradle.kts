@@ -14,3 +14,9 @@ dependencies {
 }
 
 tasks.test { useJUnitPlatform() }
+
+extra["qamzorArtifactId"] = "qamzor-core"
+extra["qamzorDescription"] = "QAMZOR core engine: reads and writes the QZRA archive format (Kotlin/JVM)"
+extra["qamzorEmptyJavadoc"] = true
+apply(from = rootProject.file("gradle/publishing.gradle"))
+

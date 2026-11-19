@@ -4,6 +4,7 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -26,7 +27,7 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Run Kotlin core and SDK tests; package desktop distribution
-        run: gradle --no-daemon --stacktrace :core:test :sdk:test :desktopApp:installDist
+        run: gradle --no-daemon --stacktrace :core:test :sdk:test :sdk-java:test :desktopApp:installDist
       - name: Upload Kotlin test reports (including failures)
         if: always()
         uses: actions/upload-artifact@v7
@@ -37,6 +38,8 @@ jobs:
             core/build/reports/tests/test/**
             sdk/build/test-results/test/**
             sdk/build/reports/tests/test/**
+            sdk-java/build/test-results/test/**
+            sdk-java/build/reports/tests/test/**
           if-no-files-found: warn
       - name: Upload desktop distribution
         uses: actions/upload-artifact@v7
@@ -101,7 +104,13 @@ jobs:
           raise SystemExit(result.returncode)
           PY_LICENSES
       - name: Build debug APK and run unit tests
-        run: gradle --no-daemon :androidApp:assembleDebug :androidApp:testDebugUnitTest
+        run: gradle --no-daemon :androidApp:assembleDebug :androidApp:testDebugUnitTest :sdk-android:assembleRelease
+      - name: Upload Android SDK AAR
+        uses: actions/upload-artifact@v7
+        with:
+          name: qamzor-android-sdk-aar
+          path: sdk-android/build/outputs/aar/*.aar
+          if-no-files-found: error
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:

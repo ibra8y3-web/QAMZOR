@@ -46,3 +46,16 @@ qamzor-desktop-<os>
 ```
 
 A passing workflow is necessary but does not replace physical-device and security testing.
+
+
+## Addendum: SDK ecosystem (Phase 7 work)
+
+Verified in the authoring workspace (2026-11-19):
+- `registry/` File Format Registry (extension, MIME, magic, versions, limits, crypto labels, error categories) cross-checked against the Python reference by `tests/test_registry_and_compat.py`.
+- `compat/` Compatibility Suite: 18 frozen vectors (6 positive, 12 negative). Python reference **18/18**; Native SDK **18/18**, also under ASan/UBSan/LeakSanitizer.
+- `native/` libqzra (C11 + C++17 wrapper, OpenSSL 3 + zlib): read-only open/unlock/list/verify/extract of QZRA 1.0-1.3; 3,128 mutation-fuzz runs without a crash.
+- `tools/make_central_bundle.py` unit-tested with synthetic repositories.
+
+Written but **not executed** (no Gradle/Android SDK/network available): `:sdk-java` tests (the Java sources do compile with `javac -Xlint:all -Werror` against a stub of the core's public signatures, and the error classifier tests pass with a JUnit shim), `:sdk-android` (AAR), `gradle/publishing.gradle`, `.github/workflows/release.yml` and `native.yml`. The Java Compatibility Suite run over the real Kotlin core is the first thing GitHub Actions must confirm.
+
+Not done: Maven Central publication (requires the maintainer's namespace, GPG key and Portal token - see `docs/PUBLISHING.md`); IANA registration of the MIME type; native archive *writing*; Windows build of libqzra; independent security audit.

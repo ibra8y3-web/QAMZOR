@@ -14,3 +14,8 @@ local.properties
 *.aab
 *.iml
 .idea/
+build/
+native/build/
+native/build-cmake/
+native/libqzra.a
+*.aar

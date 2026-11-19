@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.16)
+project(qzra VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)   # POSIX APIs (fseeko, lstat, mkdtemp)
+
+find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+find_package(ZLIB REQUIRED)
+
+add_library(qzra src/qzra.c src/qzra_json.c)
+target_include_directories(qzra PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
+                           PRIVATE src)
+target_link_libraries(qzra PRIVATE OpenSSL::Crypto ZLIB::ZLIB)
+set_target_properties(qzra PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET default)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(qzra PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+option(QZRA_BUILD_TESTS "Build the Compatibility Suite runner and smoke tests" ON)
+if(QZRA_BUILD_TESTS)
+  enable_testing()
+  add_executable(compat_runner tests/compat_runner.c)
+  target_link_libraries(compat_runner PRIVATE qzra OpenSSL::Crypto)
+  target_include_directories(compat_runner PRIVATE src)
+  add_executable(cpp_smoke tests/cpp_smoke.cpp)
+  target_link_libraries(cpp_smoke PRIVATE qzra)
+  target_compile_features(cpp_smoke PRIVATE cxx_std_17)
+  add_test(NAME compat_suite COMMAND compat_runner ${CMAKE_CURRENT_SOURCE_DIR}/../compat)
+  add_test(NAME cpp_smoke COMMAND cpp_smoke ${CMAKE_CURRENT_SOURCE_DIR}/../compat)
+endif()
+
+include(GNUInstallDirs)
+install(TARGETS qzra EXPORT qzraTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES include/qzra.h include/qzra.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes only for tags like v0.8.0 and only after EVERY test workflow passed.
+# The final upload goes to Maven Central as USER_MANAGED: a maintainer reviews the deployment
+# in the Central Portal and presses Publish (publishing to Central cannot be undone).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    uses: ./.github/workflows/tests.yml
+  platform-builds:
+    uses: ./.github/workflows/platform-builds.yml
+  native:
+    uses: ./.github/workflows/native.yml
+
+  publish-maven-central:
+    name: Sign and stage Maven Central bundle
+    needs: [python-tests, platform-builds, native]
+    runs-on: ubuntu-latest
+    environment: maven-central      # configure required reviewers on this environment
+    env:
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+      QAMZOR_POM_URL: ${{ vars.POM_URL }}
+      QAMZOR_POM_SCMURL: ${{ vars.POM_SCM_URL }}
+      QAMZOR_POM_DEVELOPERID: ${{ vars.POM_DEVELOPER_ID }}
+      QAMZOR_POM_DEVELOPERNAME: ${{ vars.POM_DEVELOPER_NAME }}
+      QAMZOR_POM_DEVELOPEREMAIL: ${{ vars.POM_DEVELOPER_EMAIL }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Derive version from tag
+        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+          packages: ''
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install platform-tools "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.9'
+      - name: Build, sign and stage into the local staging repository
+        run: >
+          gradle --no-daemon -Prelease -PVERSION_NAME="$RELEASE_VERSION"
+          :core:publishMavenPublicationToCentralStagingRepository
+          :sdk:publishMavenPublicationToCentralStagingRepository
+          :sdk-java:publishMavenPublicationToCentralStagingRepository
+          :sdk-android:publishMavenPublicationToCentralStagingRepository
+      - name: Build the Central bundle (fails if anything is unsigned or missing)
+        run: >
+          python3 tools/make_central_bundle.py build/central-staging "build/qamzor-$RELEASE_VERSION-bundle.zip"
+          --group "$(sed -n 's/^qamzor.groupId=//p' gradle.properties)"
+          --version "$RELEASE_VERSION"
+          --artifacts qamzor-core qamzor-sdk qamzor-java qamzor-android
+      - name: Upload bundle to the Central Portal (user-managed deployment)
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_PORTAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PORTAL_TOKEN }}
+        run: |
+          TOKEN="$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)"
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -F "bundle=@build/qamzor-${RELEASE_VERSION}-bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=qamzor-${RELEASE_VERSION}&publishingType=USER_MANAGED"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: central-bundle
+          path: build/qamzor-*-bundle.zip
+
+  native-source-release:
+    name: Native SDK source archive
+    needs: [python-tests, platform-builds, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Package libqzra with the Compatibility Suite and registry
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          tar --transform "s,^,libqzra-$V/," -czf "libqzra-$V.tar.gz" native compat registry docs/QZRA_FORMAT.md LICENSE
+          sha256sum "libqzra-$V.tar.gz" > "libqzra-$V.tar.gz.sha256"
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" libqzra-*.tar.gz libqzra-*.sha256 --generate-notes --verify-tag

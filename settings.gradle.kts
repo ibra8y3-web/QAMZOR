@@ -6,4 +6,4 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "QAMZOR"
-include(":core", ":androidApp", ":desktopApp", ":sdk")
+include(":core", ":androidApp", ":desktopApp", ":sdk", ":sdk-java", ":sdk-android")

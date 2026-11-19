@@ -25,3 +25,6 @@ The project is delivered in eight gated phases. A phase is complete only when it
 ## Current client implementation track
 
 The Android app, cross-platform JVM desktop app and Kotlin SDK now have initial source projects. They remain pending until Gradle CI builds them successfully. The next acceptance sequence is: (1) establish Kotlin/Python golden-file conformance for QZRA 1.0/1.1, (2) run Android emulator tests, (3) build/package Windows, Linux and macOS desktop distributions, and (4) implement the remaining SDK and enterprise requirements rather than claiming them complete.
+
+## Phase 7 progress note (2026-11-19)
+Compatibility suite, format registry, native/Java/Android SDK sources and the release pipeline exist. Phase 7 stays open until: the Java and Android SDKs pass CI, a first release is inspected in the Central Portal, `:core` throws typed exceptions (replacing message-based classification), and enterprise administration is designed.

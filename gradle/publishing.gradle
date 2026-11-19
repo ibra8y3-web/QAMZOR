@@ -1,0 +1,94 @@
+// Shared Maven publishing convention for QAMZOR SDK modules.
+// A module sets `ext.qamzorArtifactId` and `ext.qamzorDescription`, then applies this file after its
+// language plugin. Output goes to a LOCAL staging repository (build/central-staging); uploading to
+// Maven Central is done by tools/make_central_bundle.py + the release workflow, never from here.
+apply plugin: 'maven-publish'
+apply plugin: 'signing'
+
+def isAndroid = project.plugins.hasPlugin('com.android.library')
+def prop = { String key -> project.findProperty(key) ?: System.getenv(key.replace('.', '_').toUpperCase()) }
+
+if (!isAndroid) {
+    java { withSourcesJar() }
+    if (project.ext.has('qamzorEmptyJavadoc')) {
+        tasks.register('javadocJar', Jar) {
+            archiveClassifier.set('javadoc')
+            from(rootProject.file('gradle/javadoc-placeholder.md'))
+        }
+    } else {
+        java { withJavadocJar() }
+    }
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            maven(MavenPublication) {
+                groupId = project.group.toString()
+                artifactId = project.ext.qamzorArtifactId
+                version = project.version.toString()
+                if (isAndroid) {
+                    from components['release']
+                } else {
+                    from components['java']
+                    if (project.ext.has('qamzorEmptyJavadoc')) {
+                        artifact tasks.named('javadocJar')
+                    }
+                }
+                pom {
+                    name = project.ext.qamzorArtifactId
+                    description = project.ext.qamzorDescription
+                    url = prop('qamzor.pom.url')
+                    licenses {
+                        license {
+                            name = 'Apache License, Version 2.0'
+                            url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                        }
+                    }
+                    developers {
+                        developer {
+                            id = prop('qamzor.pom.developerId')
+                            name = prop('qamzor.pom.developerName')
+                            email = prop('qamzor.pom.developerEmail')
+                        }
+                    }
+                    scm {
+                        url = prop('qamzor.pom.scmUrl')
+                        connection = prop('qamzor.pom.scmUrl') ? 'scm:git:' + prop('qamzor.pom.scmUrl') : null
+                        developerConnection = prop('qamzor.pom.scmUrl') ? 'scm:git:' + prop('qamzor.pom.scmUrl') : null
+                    }
+                }
+            }
+        }
+        repositories {
+            maven {
+                name = 'centralStaging'
+                url = uri(rootProject.layout.buildDirectory.dir('central-staging').get().asFile)
+            }
+        }
+    }
+
+    signing {
+        required = project.hasProperty('release')
+        def key = prop('signingInMemoryKey')
+        if (key) {
+            useInMemoryPgpKeys(key, prop('signingInMemoryKeyPassword'))
+        }
+        sign publishing.publications.maven
+    }
+
+    tasks.register('checkCentralMetadata') {
+        doLast {
+            def missing = ['qamzor.pom.url', 'qamzor.pom.scmUrl', 'qamzor.pom.developerId',
+                           'qamzor.pom.developerName', 'qamzor.pom.developerEmail'].findAll { !prop(it) }
+            if (missing) {
+                throw new GradleException('Missing required Maven Central POM properties: ' + missing.join(', ') +
+                        '. Set them with -P<name>=<value> or in ~/.gradle/gradle.properties (docs/PUBLISHING.md).')
+            }
+            if (project.version.toString().endsWith('SNAPSHOT')) {
+                throw new GradleException('Release versions must not be SNAPSHOT.')
+            }
+        }
+    }
+    tasks.matching { it.name.startsWith('publishMavenPublicationTo') }.configureEach { dependsOn 'checkCentralMetadata' }
+}

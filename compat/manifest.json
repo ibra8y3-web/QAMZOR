@@ -1,0 +1,706 @@
+{
+  "error_categories": [
+    "AUTHENTICATION_FAILED",
+    "INTEGRITY_FAILED",
+    "INVALID_FORMAT",
+    "UNSAFE_PATH",
+    "UNSUPPORTED_VERSION"
+  ],
+  "format": "QZRA",
+  "generator": "tools/generate_compat_vectors.py (Python reference engine)",
+  "procedure": "open (with the vector passwords) then verify, then extract into an empty directory; an error at any step must carry the expected category and extraction must leave no file outside the destination",
+  "source_tree": [
+    {
+      "path": "Project",
+      "size": 0,
+      "type": "directory"
+    },
+    {
+      "path": "Project/Vault",
+      "size": 0,
+      "type": "directory"
+    },
+    {
+      "path": "Project/Vault/Inner",
+      "size": 0,
+      "type": "directory"
+    },
+    {
+      "path": "Project/Vault/Inner/deep.txt",
+      "sha256": "238373892eb3eebc14634c64d1f6c821a58a1cbbcbf718ff4ce267b743ec08fa",
+      "size": 13,
+      "type": "file"
+    },
+    {
+      "path": "Project/Vault/secret.txt",
+      "sha256": "341720c77a22a7912f2d9a303015b367a9d049f5087b2d9bfc637f6c17ed26a4",
+      "size": 13,
+      "type": "file"
+    },
+    {
+      "path": "Project/data",
+      "size": 0,
+      "type": "directory"
+    },
+    {
+      "path": "Project/data/binary.bin",
+      "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+      "size": 300000,
+      "type": "file"
+    },
+    {
+      "path": "Project/dup",
+      "size": 0,
+      "type": "directory"
+    },
+    {
+      "path": "Project/dup/copy-of-binary.bin",
+      "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+      "size": 300000,
+      "type": "file"
+    },
+    {
+      "path": "Project/empty-dir",
+      "size": 0,
+      "type": "directory"
+    },
+    {
+      "path": "Project/empty.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "type": "file"
+    },
+    {
+      "path": "Project/readme.txt",
+      "sha256": "9f690fb382783c04b6d2f1cee2e6b86b96f9f1738c42e8f8c824783526d04cd0",
+      "size": 28,
+      "type": "file"
+    },
+    {
+      "path": "Project/ملف-عربي.txt",
+      "sha256": "05dce1f98ec2e8bf027dca9b18e95cb5e94e86301fcc43a093b6ab7a2f05ea5f",
+      "size": 27,
+      "type": "file"
+    }
+  ],
+  "suite": "QAMZOR Compatibility Suite",
+  "suite_version": "1.0.0",
+  "supported_versions": [
+    "1.0",
+    "1.1",
+    "1.2",
+    "1.3"
+  ],
+  "test_only_passwords": {
+    "inner": "QAMZOR-compat-inner",
+    "master": "QAMZOR-compat-master",
+    "vault": "QAMZOR-compat-vault"
+  },
+  "vectors": [
+    {
+      "expect": {
+        "entries": [
+          {
+            "path": "legacy.txt",
+            "sha256": "f54a377b976865ce070ccc93dbcb669fc7063d3becd6ccbe50b3084ba9bc8100",
+            "size": 290,
+            "type": "file"
+          }
+        ],
+        "outcome": "ok"
+      },
+      "file": "positive-v1.0-plain.qzra",
+      "folder_passwords": {},
+      "id": "positive-v1.0-plain",
+      "kind": "positive",
+      "metadata_hidden": false,
+      "notes": "Reference-engine fixture carried over from the Kotlin core test resources.",
+      "password": null,
+      "sha256": "a15b4369591354fb25b4edb3c08f0339ad270259feacd2af13d5eb73fcfbd4e2",
+      "version": "1.0"
+    },
+    {
+      "expect": {
+        "entries": [
+          {
+            "path": "sample",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "sample/alpha.bin",
+            "sha256": "ab5e31f1c3b479bac8ebf07a150958dd8e2a52f72f298330f48c28bbd3c931df",
+            "size": 70000,
+            "type": "file"
+          },
+          {
+            "path": "sample/duplicate.bin",
+            "sha256": "ab5e31f1c3b479bac8ebf07a150958dd8e2a52f72f298330f48c28bbd3c931df",
+            "size": 70000,
+            "type": "file"
+          },
+          {
+            "path": "sample/empty.dat",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0,
+            "type": "file"
+          },
+          {
+            "path": "sample/notes.txt",
+            "sha256": "c448af5650bfc3ae23b7544a26dc011fb0cbfeabd3fdd2e3902452c07eb9b1d1",
+            "size": 33,
+            "type": "file"
+          }
+        ],
+        "outcome": "ok"
+      },
+      "file": "positive-v1.1-plain-legacy.qzra",
+      "folder_passwords": {},
+      "id": "positive-v1.1-plain-legacy",
+      "kind": "positive",
+      "metadata_hidden": false,
+      "notes": "Reference-engine fixture carried over from the Kotlin core test resources.",
+      "password": null,
+      "sha256": "d71a2a59c49f36e65d5b6441dbf47d41c076ac53e2b845e25abb05af0753bbdf",
+      "version": "1.1"
+    },
+    {
+      "expect": {
+        "entries": [
+          {
+            "path": "Project",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner/deep.txt",
+            "sha256": "238373892eb3eebc14634c64d1f6c821a58a1cbbcbf718ff4ce267b743ec08fa",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/Vault/secret.txt",
+            "sha256": "341720c77a22a7912f2d9a303015b367a9d049f5087b2d9bfc637f6c17ed26a4",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/data",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/data/binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/dup",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/dup/copy-of-binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/empty-dir",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/empty.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0,
+            "type": "file"
+          },
+          {
+            "path": "Project/readme.txt",
+            "sha256": "9f690fb382783c04b6d2f1cee2e6b86b96f9f1738c42e8f8c824783526d04cd0",
+            "size": 28,
+            "type": "file"
+          },
+          {
+            "path": "Project/ملف-عربي.txt",
+            "sha256": "05dce1f98ec2e8bf027dca9b18e95cb5e94e86301fcc43a093b6ab7a2f05ea5f",
+            "size": 27,
+            "type": "file"
+          }
+        ],
+        "outcome": "ok"
+      },
+      "file": "positive-v1.1-plain.qzra",
+      "folder_passwords": {},
+      "id": "positive-v1.1-plain",
+      "kind": "positive",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": null,
+      "sha256": "c14f8b546d77e0a5334022e7c9ba02a825d4329676bde6007a94e50ea25dd06c",
+      "version": "1.1"
+    },
+    {
+      "expect": {
+        "entries": [
+          {
+            "path": "Project",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner/deep.txt",
+            "sha256": "238373892eb3eebc14634c64d1f6c821a58a1cbbcbf718ff4ce267b743ec08fa",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/Vault/secret.txt",
+            "sha256": "341720c77a22a7912f2d9a303015b367a9d049f5087b2d9bfc637f6c17ed26a4",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/data",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/data/binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/dup",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/dup/copy-of-binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/empty-dir",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/empty.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0,
+            "type": "file"
+          },
+          {
+            "path": "Project/readme.txt",
+            "sha256": "9f690fb382783c04b6d2f1cee2e6b86b96f9f1738c42e8f8c824783526d04cd0",
+            "size": 28,
+            "type": "file"
+          },
+          {
+            "path": "Project/ملف-عربي.txt",
+            "sha256": "05dce1f98ec2e8bf027dca9b18e95cb5e94e86301fcc43a093b6ab7a2f05ea5f",
+            "size": 27,
+            "type": "file"
+          }
+        ],
+        "outcome": "ok"
+      },
+      "file": "positive-v1.2-encrypted.qzra",
+      "folder_passwords": {},
+      "id": "positive-v1.2-encrypted",
+      "kind": "positive",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": "QAMZOR-compat-master",
+      "sha256": "21f79fbf278930f04b841342f860c254782e2b4c64a4176c1433d3c124b59c28",
+      "version": "1.2"
+    },
+    {
+      "expect": {
+        "entries": [
+          {
+            "path": "Project",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner/deep.txt",
+            "sha256": "238373892eb3eebc14634c64d1f6c821a58a1cbbcbf718ff4ce267b743ec08fa",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/Vault/secret.txt",
+            "sha256": "341720c77a22a7912f2d9a303015b367a9d049f5087b2d9bfc637f6c17ed26a4",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/data",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/data/binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/dup",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/dup/copy-of-binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/empty-dir",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/empty.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0,
+            "type": "file"
+          },
+          {
+            "path": "Project/readme.txt",
+            "sha256": "9f690fb382783c04b6d2f1cee2e6b86b96f9f1738c42e8f8c824783526d04cd0",
+            "size": 28,
+            "type": "file"
+          },
+          {
+            "path": "Project/ملف-عربي.txt",
+            "sha256": "05dce1f98ec2e8bf027dca9b18e95cb5e94e86301fcc43a093b6ab7a2f05ea5f",
+            "size": 27,
+            "type": "file"
+          }
+        ],
+        "outcome": "ok"
+      },
+      "file": "positive-v1.3-hidden-metadata.qzra",
+      "folder_passwords": {},
+      "id": "positive-v1.3-hidden-metadata",
+      "kind": "positive",
+      "metadata_hidden": true,
+      "notes": "",
+      "password": "QAMZOR-compat-master",
+      "sha256": "986883a6ad579b1d5edbc9649c8b61426a557124156db13cd845445bcd8b924d",
+      "version": "1.3"
+    },
+    {
+      "expect": {
+        "entries": [
+          {
+            "path": "Project",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/Vault/Inner/deep.txt",
+            "sha256": "238373892eb3eebc14634c64d1f6c821a58a1cbbcbf718ff4ce267b743ec08fa",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/Vault/secret.txt",
+            "sha256": "341720c77a22a7912f2d9a303015b367a9d049f5087b2d9bfc637f6c17ed26a4",
+            "size": 13,
+            "type": "file"
+          },
+          {
+            "path": "Project/data",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/data/binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/dup",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/dup/copy-of-binary.bin",
+            "sha256": "364d1e0aab76ada00847206a4a15b4dd0dc2e3d08fa797f67ea1bb72067c88e4",
+            "size": 300000,
+            "type": "file"
+          },
+          {
+            "path": "Project/empty-dir",
+            "size": 0,
+            "type": "directory"
+          },
+          {
+            "path": "Project/empty.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0,
+            "type": "file"
+          },
+          {
+            "path": "Project/readme.txt",
+            "sha256": "9f690fb382783c04b6d2f1cee2e6b86b96f9f1738c42e8f8c824783526d04cd0",
+            "size": 28,
+            "type": "file"
+          },
+          {
+            "path": "Project/ملف-عربي.txt",
+            "sha256": "05dce1f98ec2e8bf027dca9b18e95cb5e94e86301fcc43a093b6ab7a2f05ea5f",
+            "size": 27,
+            "type": "file"
+          }
+        ],
+        "outcome": "ok"
+      },
+      "file": "positive-v1.3-folder-scopes.qzra",
+      "folder_passwords": {
+        "Project/Vault": "QAMZOR-compat-vault",
+        "Project/Vault/Inner": "QAMZOR-compat-inner"
+      },
+      "id": "positive-v1.3-folder-scopes",
+      "kind": "positive",
+      "metadata_hidden": true,
+      "notes": "Nested scope: files under Project/Vault/Inner use INNER only; the parent scope is replaced, not combined.",
+      "password": "QAMZOR-compat-master",
+      "sha256": "0afecc5e715e2181b5e54296721376312a57587c5987f60c1c1da06b48c2ad43",
+      "version": "1.3"
+    },
+    {
+      "expect": {
+        "category": "AUTHENTICATION_FAILED",
+        "outcome": "error"
+      },
+      "file": "negative-v1.2-wrong-password.qzra",
+      "folder_passwords": {},
+      "id": "negative-v1.2-wrong-password",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": "wrong-password",
+      "sha256": "21f79fbf278930f04b841342f860c254782e2b4c64a4176c1433d3c124b59c28",
+      "version": "1.2"
+    },
+    {
+      "expect": {
+        "category": "AUTHENTICATION_FAILED",
+        "outcome": "error"
+      },
+      "file": "negative-v1.3-wrong-master.qzra",
+      "folder_passwords": {},
+      "id": "negative-v1.3-wrong-master",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": "wrong-password",
+      "sha256": "986883a6ad579b1d5edbc9649c8b61426a557124156db13cd845445bcd8b924d",
+      "version": "1.3"
+    },
+    {
+      "expect": {
+        "category": "AUTHENTICATION_FAILED",
+        "outcome": "error"
+      },
+      "file": "negative-v1.3-wrong-folder-password.qzra",
+      "folder_passwords": {
+        "Project/Vault": "wrong-folder-password",
+        "Project/Vault/Inner": "QAMZOR-compat-inner"
+      },
+      "id": "negative-v1.3-wrong-folder-password",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "Master password is correct (names are listed); the folder password is wrong, so verify/extract must fail.",
+      "password": "QAMZOR-compat-master",
+      "sha256": "0afecc5e715e2181b5e54296721376312a57587c5987f60c1c1da06b48c2ad43",
+      "version": "1.3"
+    },
+    {
+      "expect": {
+        "category": "INTEGRITY_FAILED",
+        "outcome": "error"
+      },
+      "file": "negative-v1.1-tampered-payload.qzra",
+      "folder_passwords": {},
+      "id": "negative-v1.1-tampered-payload",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": null,
+      "sha256": "617f38280eb0b7143f104ac1a13107d2adb57cc7b9607a383c3bfb871e5e5a9a",
+      "version": "1.1"
+    },
+    {
+      "expect": {
+        "category": "AUTHENTICATION_FAILED",
+        "outcome": "error"
+      },
+      "file": "negative-v1.2-tampered-ciphertext.qzra",
+      "folder_passwords": {},
+      "id": "negative-v1.2-tampered-ciphertext",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "An AES-GCM tag failure cannot distinguish a wrong key from tampering, so it is reported as AUTHENTICATION_FAILED.",
+      "password": "QAMZOR-compat-master",
+      "sha256": "5a65e451c81a07e7a7f2db16fa4b4d6fe524b8c612e56b79f74b07ed7933c4d6",
+      "version": "1.2"
+    },
+    {
+      "expect": {
+        "category": "AUTHENTICATION_FAILED",
+        "outcome": "error"
+      },
+      "file": "negative-v1.3-tampered-manifest.qzra",
+      "folder_passwords": {},
+      "id": "negative-v1.3-tampered-manifest",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": "QAMZOR-compat-master",
+      "sha256": "3f000926e4a119a9624d593cac0214e93c9a0d70b6b4a255b7ff7b744926a2ca",
+      "version": "1.3"
+    },
+    {
+      "expect": {
+        "category": "INVALID_FORMAT",
+        "outcome": "error"
+      },
+      "file": "negative-v1.1-truncated.qzra",
+      "folder_passwords": {},
+      "id": "negative-v1.1-truncated",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": null,
+      "sha256": "f8b05d4a1f3a84e42582bcea7f1f2a355eeb3386be5419217282a521eddc67bb",
+      "version": "1.1"
+    },
+    {
+      "expect": {
+        "category": "INVALID_FORMAT",
+        "outcome": "error"
+      },
+      "file": "negative-bad-magic.qzra",
+      "folder_passwords": {},
+      "id": "negative-bad-magic",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": null,
+      "sha256": "235b471163044f5686bcc2b7fc95cf4b6977fd02a815cf1380e1c182d3425e42",
+      "version": null
+    },
+    {
+      "expect": {
+        "category": "UNSUPPORTED_VERSION",
+        "outcome": "error"
+      },
+      "file": "negative-unsupported-minor.qzra",
+      "folder_passwords": {},
+      "id": "negative-unsupported-minor",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": null,
+      "sha256": "1c0365535301a9ac5b01fd37d4287054b3ac937c2e4a69e8af653c7b9206007e",
+      "version": null
+    },
+    {
+      "expect": {
+        "category": "UNSAFE_PATH",
+        "outcome": "error"
+      },
+      "file": "negative-path-traversal.qzra",
+      "folder_passwords": {},
+      "id": "negative-path-traversal",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "Entry path '../escape.txt' must be rejected before any file is written.",
+      "password": null,
+      "sha256": "469dbb9961abee10e0ba58c81da763ebac39f2cd4ebf82a6b91660ade95f9717",
+      "version": "1.0"
+    },
+    {
+      "expect": {
+        "category": "UNSAFE_PATH",
+        "outcome": "error"
+      },
+      "file": "negative-absolute-path.qzra",
+      "folder_passwords": {},
+      "id": "negative-absolute-path",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": null,
+      "sha256": "5a02dec1364dd40c8bf1e9f3a9d6fa1d9e54efed5e381aae056b96263363dd9c",
+      "version": "1.0"
+    },
+    {
+      "expect": {
+        "category": "UNSAFE_PATH",
+        "outcome": "error"
+      },
+      "file": "negative-windows-device-name.qzra",
+      "folder_passwords": {},
+      "id": "negative-windows-device-name",
+      "kind": "negative",
+      "metadata_hidden": false,
+      "notes": "",
+      "password": null,
+      "sha256": "9efd65c8058fac84fd84aebb09ca65ff66c2cb8d1f21a827c5446a81265e7632",
+      "version": "1.0"
+    }
+  ]
+}

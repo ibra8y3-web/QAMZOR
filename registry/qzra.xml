@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- freedesktop.org shared-mime-info definitions for QAMZOR file types.
+     Install to /usr/share/mime/packages/ (or ~/.local/share/mime/packages/) and run update-mime-database. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/vnd.qamzor.qzra">
+    <comment>QAMZOR QZRA archive</comment>
+    <comment xml:lang="ar">أرشيف QZRA من QAMZOR</comment>
+    <alias type="application/x-qzra"/>
+    <sub-class-of type="application/octet-stream"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="QZRA\r\n\x1a\n"/>
+    </magic>
+    <glob pattern="*.qzra"/>
+  </mime-type>
+  <mime-type type="application/vnd.qamzor.qzsig+json">
+    <comment>QAMZOR detached archive signature</comment>
+    <sub-class-of type="application/json"/>
+    <glob pattern="*.qzsig"/>
+  </mime-type>
+  <mime-type type="application/vnd.qamzor.qzrec">
+    <comment>QAMZOR archive recovery data</comment>
+    <sub-class-of type="application/octet-stream"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="QZRP\r\n\x1a\n"/>
+    </magic>
+    <glob pattern="*.qzrec"/>
+  </mime-type>
+</mime-info>

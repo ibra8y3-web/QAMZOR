@@ -1,0 +1,76 @@
+{
+  "registry": "QAMZOR File Format Registry",
+  "registry_version": "1.0.0",
+  "stability": "Pre-1.0 development specification. Identifiers below are fixed by this registry for QAMZOR software; they are not registered with IANA, Apple or Microsoft (see registry/README.md, section 'Registration status').",
+  "normative_spec": "docs/QZRA_FORMAT.md",
+  "formats": [
+    {
+      "id": "QZRA",
+      "title": "QAMZOR QZRA archive container",
+      "extension": ".qzra",
+      "mime": "application/vnd.qamzor.qzra",
+      "mime_aliases": ["application/x-qzra"],
+      "uti": "org.qamzor.qzra",
+      "uti_conforms_to": ["public.data", "public.archive"],
+      "magic": { "offset": 0, "bytes_hex": "515a52410d0a1a0a", "ascii_escaped": "QZRA\\r\\n\\x1a\\n" },
+      "header": { "size_bytes": 32, "byte_order": "big-endian", "struct": ">8sHHIQII",
+                  "fields": ["magic", "major", "minor", "flags", "manifest_length", "entry_count", "reserved"] },
+      "major_version": 1,
+      "versions": [
+        { "minor": 0, "status": "legacy-read-only", "summary": "Single-block files, plaintext JSON manifest" },
+        { "minor": 1, "status": "current", "summary": "Content-defined chunks, deduplication, plaintext JSON manifest" },
+        { "minor": 2, "status": "current", "summary": "AES-256-GCM chunk encryption with authenticated, visible manifest" },
+        { "minor": 3, "status": "current", "summary": "Encrypted manifest (QZ13 envelope) and independent folder passwords" }
+      ],
+      "unknown_version_rule": "A reader MUST reject any major/minor it does not implement (error category UNSUPPORTED_VERSION) and MUST NOT guess.",
+      "limits": {
+        "max_manifest_bytes": 67108864,
+        "max_entries": 1000000,
+        "max_chunk_bytes": 1048576,
+        "max_chunk_compressed_bytes": 1114112,
+        "max_folder_scopes": 32
+      },
+      "path_rules": ["relative", "posix-separator", "unicode-nfc", "no-traversal", "no-absolute", "no-backslash-or-colon", "no-windows-device-names", "no-case-fold-collisions", "no-symlinks"],
+      "crypto": {
+        "cipher": "AES-256-GCM",
+        "kdf": { "name": "scrypt", "n": 32768, "r": 8, "p": 1, "salt_bytes": 16, "key_bytes": 32 },
+        "v13_envelope": { "magic_ascii": "QZ13", "layout": ["magic:4", "salt:16", "nonce:12", "ciphertext+tag"] },
+        "v13_subkey_purposes": ["manifest", "root-chunks", "folder-check", "folder-chunks"],
+        "v13_subkey_derivation": "HMAC-SHA256(kdf_root, \"QZRA-1.3-SUBKEY\\0\" || purpose_ascii)",
+        "aad_prefixes": ["QZRA-1.2-CHUNK\\0", "QZRA-1.3-CHUNK\\0", "QZRA-1.3-MANIFEST\\0", "QZRA-1.3-SCOPE-CHECK\\0"],
+        "canonical_manifest_json": "sorted keys, separators (\",\", \":\"), ensure_ascii=false, UTF-8 (used for the QZRA 1.2 manifest authenticator)"
+      }
+    },
+    {
+      "id": "QZRA-SIGNATURE",
+      "title": "Detached Ed25519 archive signature",
+      "extension": ".qzsig",
+      "mime": "application/vnd.qamzor.qzsig+json",
+      "mime_aliases": [],
+      "uti": "org.qamzor.qzsig",
+      "uti_conforms_to": ["public.json"],
+      "encoding": "UTF-8 JSON",
+      "json_identity": { "format": "QZRA-SIGNATURE", "version": 1 },
+      "domain_separation": "QAMZOR-ED25519-ARCHIVE-SIGNATURE-V1\\0"
+    },
+    {
+      "id": "QZRA-RECOVERY",
+      "title": "XOR parity recovery sidecar",
+      "extension": ".qzrec",
+      "mime": "application/vnd.qamzor.qzrec",
+      "mime_aliases": [],
+      "uti": "org.qamzor.qzrec",
+      "uti_conforms_to": ["public.data"],
+      "magic": { "offset": 0, "bytes_hex": "515a52500d0a1a0a", "ascii_escaped": "QZRP\\r\\n\\x1a\\n" },
+      "header": { "size_bytes": 12, "byte_order": "big-endian", "struct": ">8sI" }
+    }
+  ],
+  "error_categories": {
+    "AUTHENTICATION_FAILED": "An AES-GCM tag failed: wrong password or tampered encrypted data (the two are indistinguishable).",
+    "INTEGRITY_FAILED": "Unencrypted data failed a size, digest or decompression check.",
+    "INVALID_FORMAT": "Malformed header, manifest, layout, or truncated archive.",
+    "UNSAFE_PATH": "An entry path is absolute, traverses upward, is a Windows device name, or otherwise unsafe.",
+    "UNSUPPORTED_VERSION": "Header version not implemented by the reader."
+  },
+  "compatibility_suite": "compat/manifest.json"
+}

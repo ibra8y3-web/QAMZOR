@@ -1,0 +1,44 @@
+name: Native SDK
+
+on:
+  push:
+    paths: ['native/**', 'compat/**', 'registry/**', '.github/workflows/native.yml']
+  pull_request:
+    paths: ['native/**', 'compat/**', 'registry/**', '.github/workflows/native.yml']
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-conformance:
+    name: libqzra (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev pkg-config
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+      - name: Build, run the Compatibility Suite and the C++ smoke test
+        working-directory: native
+        run: make check
+      - name: Sanitizer mutation fuzz smoke test
+        if: runner.os == 'Linux'
+        working-directory: native
+        run: make fuzz
+      - name: CMake build and ctest
+        working-directory: native
+        run: |
+          cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cmake
+          ctest --test-dir build-cmake --output-on-failure
