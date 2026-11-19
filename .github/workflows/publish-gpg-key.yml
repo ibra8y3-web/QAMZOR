@@ -1,0 +1,72 @@
+name: Publish Maven Central signing key
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-gpg-key.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  publish-public-key:
+    name: Publish the existing signing key's public half
+    runs-on: ubuntu-latest
+    steps:
+      - name: Import signing key and publish its public half
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "::error::SIGNING_KEY is missing."
+            exit 1
+          fi
+
+          export GNUPGHOME="$RUNNER_TEMP/qamzor-signing-gnupg"
+          install -d -m 700 "$GNUPGHOME"
+          printf '%s\n' "$SIGNING_KEY" | gpg --batch --import
+
+          # This is the issuer key ID found in the actual v0.8.2 Central bundle signatures.
+          KEY_ID="E7BFA2F55E033D72"
+          SECRET_KEYS="$(gpg --batch --with-colons --list-secret-keys)"
+          PRIMARY_FINGERPRINT="$(
+            printf '%s\n' "$SECRET_KEYS" | awk -F: -v want="$KEY_ID" '
+              $1 == "sec" { primary=""; waiting=1; next }
+              $1 == "ssb" { waiting=0; next }
+              $1 == "fpr" {
+                fp=toupper($10)
+                if (waiting) {
+                  primary=fp
+                  waiting=0
+                  if (substr(fp, length(fp)-15) == want) { print primary; exit }
+                  next
+                }
+                if (primary != "" && substr(fp, length(fp)-15) == want) {
+                  print primary
+                  exit
+                }
+              }'
+          )"
+          if [ -z "$PRIMARY_FINGERPRINT" ]; then
+            echo "::error::The imported SIGNING_KEY does not contain the signing key ID used by the Central artifacts ($KEY_ID)."
+            exit 1
+          fi
+
+          echo "Publishing public key fingerprint: $PRIMARY_FINGERPRINT"
+          gpg --batch --keyserver hkps://keyserver.ubuntu.com --send-keys "$PRIMARY_FINGERPRINT"
+
+          # Confirm that the supported Ubuntu keyserver serves the same primary fingerprint.
+          VERIFY_HOME="$RUNNER_TEMP/qamzor-keyserver-verify"
+          install -d -m 700 "$VERIFY_HOME"
+          curl --fail --silent --show-error --location --retry 8 --retry-all-errors --retry-delay 5 \
+            "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$PRIMARY_FINGERPRINT" \
+            --output "$RUNNER_TEMP/qamzor-public-key-from-server.asc"
+          gpg --homedir "$VERIFY_HOME" --batch --import "$RUNNER_TEMP/qamzor-public-key-from-server.asc"
+          gpg --homedir "$VERIFY_HOME" --batch --with-colons --fingerprint "$PRIMARY_FINGERPRINT" |
+            awk -F: -v want="$PRIMARY_FINGERPRINT" '
+              $1 == "fpr" && toupper($10) == want { found=1 }
+              END { if (!found) exit 1 }'
+          echo "Verified: keyserver.ubuntu.com now serves the QAMZOR signing public key."
