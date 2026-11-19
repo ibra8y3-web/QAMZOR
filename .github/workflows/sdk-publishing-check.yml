@@ -33,7 +33,7 @@ jobs:
           import subprocess
           result = subprocess.run(
               ["sdkmanager", "--licenses"],
-              input=("y\\n" * 100).encode("ascii"),
+              input=("y\n" * 100).encode("ascii"),
               check=False,
           )
           raise SystemExit(result.returncode)
@@ -51,7 +51,7 @@ jobs:
                   "sdkmanager", "--install",
                   "platform-tools", "platforms;android-35", "build-tools;35.0.0",
               ],
-              input=("y\\n" * 100).encode("ascii"),
+              input=("y\n" * 100).encode("ascii"),
               check=False,
           )
           raise SystemExit(result.returncode)
@@ -60,21 +60,21 @@ jobs:
           import subprocess
           result = subprocess.run(
               ["sdkmanager", "--licenses"],
-              input=("y\\n" * 100).encode("ascii"),
+              input=("y\n" * 100).encode("ascii"),
               check=False,
           )
           raise SystemExit(result.returncode)
           PY_LICENSES
       - name: Test SDKs, build AAR and publish to Maven Local
         run: |
-          gradle --no-daemon --stacktrace \\
-            :core:test \\
-            :sdk:test \\
-            :sdk-java:test \\
-            :sdk-android:assembleRelease \\
-            :core:publishToMavenLocal \\
-            :sdk:publishToMavenLocal \\
-            :sdk-java:publishToMavenLocal \\
+          gradle --no-daemon --stacktrace \
+            :core:test \
+            :sdk:test \
+            :sdk-java:test \
+            :sdk-android:assembleRelease \
+            :core:publishToMavenLocal \
+            :sdk:publishToMavenLocal \
+            :sdk-java:publishToMavenLocal \
             :sdk-android:publishToMavenLocal
       - name: Verify coordinates, POMs and binaries
         shell: bash
@@ -101,6 +101,6 @@ jobs:
                   if not path.is_file() or path.stat().st_size == 0:
                       missing.append(str(path))
           if missing:
-              raise SystemExit("Missing Maven Local publication files:\\n" + "\\n".join(missing))
+              raise SystemExit("Missing Maven Local publication files:\n" + "\n".join(missing))
           print(f"Verified {len(expected)} QAMZOR Maven artifacts under {root}")
           PY
