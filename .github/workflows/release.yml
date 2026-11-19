@@ -94,7 +94,12 @@ jobs:
           V="${GITHUB_REF_NAME#v}"
           tar --transform "s,^,libqzra-$V/," -czf "libqzra-$V.tar.gz" native compat registry docs/QZRA_FORMAT.md LICENSE
           sha256sum "libqzra-$V.tar.gz" > "libqzra-$V.tar.gz.sha256"
-      - name: Attach to the GitHub release
+      - name: Attach to the existing GitHub release, or create it if absent
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" libqzra-*.tar.gz libqzra-*.sha256 --generate-notes --verify-tag
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" libqzra-*.tar.gz libqzra-*.sha256 --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" libqzra-*.tar.gz libqzra-*.sha256 --generate-notes --verify-tag
+          fi
