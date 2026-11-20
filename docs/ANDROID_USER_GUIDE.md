@@ -80,3 +80,22 @@ The Android writer in this development build still creates unencrypted QZRA 1.1 
 The operation center stores up to 100 secret-free operation events in app preferences. It displays the current operation and elapsed time while the Activity is running, and counts completed, failed and interrupted tasks. If the Android process is restarted while a task is active, the next launch records that task as interrupted. This Activity-thread worker is not a persistent WorkManager/foreground service: it does not guarantee completion after process death and does not provide pause/resume/cancel.
 
 The Kotlin source includes Python-generated QZRA 1.3 interoperability tests, and the GitHub Actions workflow is configured to install Gradle/JDK/Android SDK, run the Kotlin tests and build a debug APK. These tests/builds must complete successfully on GitHub before the update can be considered compiled or device-validated.
+
+
+## أدوات إضافية (زر «أدوات» أعلى الشاشة وقوائم الملفات ⋮)
+
+**شريط التقدّم والإلغاء.** أثناء أي عملية (إنشاء، فحص، استخراج، تقسيم، استرجاع…) يظهر شريط بنسبة مئوية وسرعة ووقت متبقٍّ وزر **إلغاء**. الإلغاء يوقف العملية بين الكتل ويحذف أي ناتج جزئي. العمليات الطويلة تستمر عند الخروج من التطبيق عبر خدمة أمامية بإشعار، وتصلك نتيجتها بإشعار إن كانت إشعارات التطبيق مسموحة. هذا يحل محل عبارة «لا يوجد إلغاء» في الملاحظة السابقة؛ أما الإيقاف المؤقت/الاستئناف فلا يزال غير مدعوم، وإنهاء النظام للعملية يظل ممكنًا على بعض الأجهزة.
+
+**كاشف الملفات المكررة.** يقارن المحتوى لا الأسماء: يطابق الحجم، ثم بصمة عيّنة، ثم SHA-256 للملف كاملًا، ولا يعدّ ملفين مكررين إلا عند تطابق SHA-256. يعرض المساحة القابلة للتوفير، ويحدد تلقائيًا كل النسخ عدا الأقدم، ولا يسمح بحذف كل نسخ المجموعة، ولا يحذف ملفًا تغيّر حجمه أو تاريخه بعد الفحص.
+
+**الخزنة السرية.** كل عنصر يُشفَّر بمحرك QZRA 1.3 (scrypt + AES-256-GCM مع إخفاء الأسماء) داخل مساحة التطبيق الخاصة، وتُحجب لقطات الشاشة داخلها. الفتح بكلمة المرور أو البصمة، وتُقفل تلقائيًا بعد 3 دقائق أو عند مغادرة التطبيق. نسيان كلمة المرور لا حل له. تغيير كلمة مرور الخزنة غير مدعوم في هذا الإصدار.
+
+**المشاركة والتقسيم.** «مشاركة الأرشيف» تفتح قائمة المشاركة. «تقسيم لأجزاء» ينشئ ملف `.qzset` ومجلد أجزاء بصيغة `QZRA-PART-SET` v2 نفسها المستخدمة في `volumes.py`، وكل جزء مغطى بـ SHA-256. «دمج الأجزاء» على ملف `.qzset` يتحقق من كل جزء ومن الأرشيف الناتج قبل نشره.
+
+**بيانات الاسترجاع.** ينشئ ملف `.qzrp` بصيغة `QZRP` v1 نفسها في `recovery.py` (تماثل XOR لكل مجموعة كتل). يصلح كتلة تالفة واحدة في كل مجموعة، ويرفض بوضوح ما هو أكبر من ذلك، ولا يعدّل الأصل أبدًا (ينشئ نسخة `.repaired.qzra`). لا يغني عن النسخ الاحتياطي المستقل.
+
+**الأرشفة المجدولة.** تُنفَّذ عبر WorkManager يوميًا أو أسبوعيًا، وتتحقق من كل أرشيف وتحذف الأقدم حسب عدد النسخ المحدد. الحد الأدنى للنظام للتكرار الدوري وتوقيته تقريبي بحسب توفير البطارية. كلمة مرور الأرشيف المجدول تُحفظ مغلّفة بمفتاح Keystore بلا مصادقة (لأن التنفيذ في الخلفية)، لذا اختر مجلد حفظ خاصًا.
+
+**البصمة والقفل.** يتطلب فتح الخزنة وكلمات مرور الأرشيف بالبصمة أندرويد 10+؛ المفتاح داخل Keystore ويتطلب مصادقة حيوية في كل استخدام ويُلغى عند تغيّر البصمات المسجلة. قفل التطبيق يستخدم البصمة أو قفل الجهاز.
+
+> حالة التحقق: هذه الإضافات كُتبت دون إمكانية الترجمة أو التشغيل في بيئة الكتابة. اختبارات `FeatureToolsTest` في `core` تغطي التقسيم والدمج والاسترجاع وكشف التكرار والتقدّم والإلغاء، ويجب أن تنجح في GitHub Actions قبل اعتبار الإصدار مترجمًا، وتبقى واجهات البصمة والإشعارات والجدولة بحاجة لتجربة على جهاز حقيقي.

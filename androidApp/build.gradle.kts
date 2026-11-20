@@ -20,4 +20,6 @@ kotlin { jvmToolchain(17) }
 dependencies {
     implementation(project(":core"))
     implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("androidx.core:core:1.13.1")
+    implementation("androidx.work:work-runtime:2.9.1")
 }

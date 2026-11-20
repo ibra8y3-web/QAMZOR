@@ -47,6 +47,30 @@ object ArchiveEngine {
     private const val BOUNDARY_MASK = 0x3ffff
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
+    private val progressHolder = ThreadLocal<ProgressListener?>()
+
+    /** Runs [block] with [listener] receiving progress and cancellation polls for engine calls made on this thread. */
+    @JvmStatic
+    fun <T> withProgress(listener: ProgressListener?, block: () -> T): T {
+        val previous = progressHolder.get()
+        progressHolder.set(listener)
+        try {
+            return block()
+        } finally {
+            progressHolder.set(previous)
+        }
+    }
+
+    private fun progressPhase(phase: String, totalBytes: Long) {
+        progressHolder.get()?.onPhase(phase, totalBytes)
+    }
+
+    private fun progressBytes(deltaBytes: Long) {
+        val listener = progressHolder.get() ?: return
+        if (listener.isCancelled()) throw OperationCancelledException()
+        listener.onBytes(deltaBytes)
+    }
+
     @Serializable private data class Manifest(
         val format: String,
         val version: String,
@@ -160,6 +184,7 @@ object ArchiveEngine {
         val entries = ArrayList<Entry>(items.size)
         var payloadLength = 0L
         var originalBytes = 0L
+        progressPhase("create", items.filter { !it.directory }.sumOf { it.file.length() })
         try {
             RandomAccessFile(spool, "rw").use { payload ->
                 for ((name, source, isDirectory) in items) {
@@ -177,6 +202,7 @@ object ArchiveEngine {
                         forEachChunk(input) { raw ->
                             fileDigest.update(raw)
                             fileSize += raw.size
+                            progressBytes(raw.size.toLong())
                             val digest = sha256(raw)
                             val key = "${scopeId ?: "-"}:$digest:${raw.size}"
                             val existing = index[key]
@@ -414,6 +440,7 @@ object ArchiveEngine {
         val totalBytes = files.sumOf { it.size }
         require(files.size <= maxFiles) { "Selected extraction exceeds file-count limit ($maxFiles)" }
         require(totalBytes <= maxTotalBytes) { "Selected extraction exceeds byte limit ($maxTotalBytes)" }
+        progressPhase("extract", totalBytes)
 
         if (destination.exists()) require(!Files.isSymbolicLink(destination.toPath()) && destination.isDirectory) { "Extraction destination must be a regular directory" }
         require(destination.mkdirs() || destination.isDirectory) { "Cannot create extraction destination" }
@@ -518,6 +545,7 @@ object ArchiveEngine {
             }
             require(sha256(raw) == block.sha256) { "Chunk integrity check failed" }
             wholeDigest.update(raw)
+            progressBytes(raw.size.toLong())
             output?.write(raw)
             if (retained != null && retained.size() < retainLimit) {
                 val count = minOf(raw.size, retainLimit - retained.size())
@@ -537,6 +565,7 @@ object ArchiveEngine {
         val (version, manifest, payloadStart, fileLength) = context
         var files = 0
         var bytes = 0L
+        progressPhase("verify", manifest.entries.filter { it.type == "file" }.sumOf { it.size })
         RandomAccessFile(archive, "r").use { input ->
             for (entry in manifest.entries) {
                 validatePath(entry.path)

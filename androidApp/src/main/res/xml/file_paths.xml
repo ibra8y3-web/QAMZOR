@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets QAMZOR hand a single archive/part/export to the share sheet or a viewer through a content:// URI.
+     Only URIs the app itself creates and explicitly grants are readable; the provider is not exported. -->
+<paths>
+    <root-path name="storage_root" path="" />
+</paths>

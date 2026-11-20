@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Android: fix false "failed" status after a successful operation (outcome now depends only on the task itself; log counters match exact event markers).
+- Android: progress bar with percentage/speed/ETA and a Cancel button; foreground service + notifications for long operations; "Tools" menu.
+- Android: duplicate-file finder (size → sampled hash → full SHA-256), secret vault (QZRA 1.3 per item, password or biometric), archive sharing, split/join volumes (`QZRA-PART-SET` v2), recovery sidecars (`QZRP` v1), scheduled archiving (WorkManager), app lock and biometric-saved archive passwords.
+- Core: `ProgressListener` / `ArchiveEngine.withProgress` (thread-attached, no signature changes), `QzraVolumes`, `QzraRecovery`, `DuplicateScanner` with `FeatureToolsTest`.
 - Added File Format Registry (`registry/`), Compatibility Suite (`compat/`, 18 vectors), Native SDK `libqzra` (`native/`), Java SDK (`:sdk-java`), Android SDK AAR module (`:sdk-android`), Maven publishing convention and release workflow. See `docs/SDK_OVERVIEW.md` and `docs/PUBLISHING.md`.
 
 ## 0.9.0-dev — Built-in file manager (2026-11-07)

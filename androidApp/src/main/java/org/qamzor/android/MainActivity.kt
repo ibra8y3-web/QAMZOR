@@ -40,6 +40,7 @@ import android.widget.Switch
 import android.widget.TextView
 import androidx.documentfile.provider.DocumentFile
 import org.qamzor.core.ArchiveEngine
+import org.qamzor.core.OperationCancelledException
 import java.io.File
 import java.text.Normalizer
 import java.util.Locale
@@ -113,10 +114,47 @@ class MainActivity : Activity() {
     @Volatile private var activeOperationLabel: String? = null
     @Volatile private var activeOperationStartedAt: Long? = null
 
+    // Features added on top of the base app: progress/cancel, notifications, tools, vault, lock.
+    private lateinit var features: FeatureUi
+    private lateinit var progressStrip: OperationStrip
+    @Volatile private var activeProgress: OperationProgress? = null
+    @Volatile private var appInForeground = false
+    private var operationServiceRunning = false
+    private var notificationsAsked = false
+    private val tickHandler = Handler(Looper.getMainLooper())
+    private val progressTicker = object : Runnable {
+        override fun run() {
+            refreshProgressStrip()
+            val progress = activeProgress ?: return
+            if (!operationServiceRunning && System.currentTimeMillis() - progress.createdAt > 2000L) ensureOperationService()
+            if (operationServiceRunning) {
+                OperationNotifier.updateProgress(this@MainActivity, progress.label, progress.detail(), progress.percent())
+            }
+            tickHandler.postDelayed(this, 400L)
+        }
+    }
+
+    private val featureHost = object : FeatureHost {
+        override val activity: Activity get() = this@MainActivity
+        override fun currentDirectory(): File = currentDir
+        override fun storageRoots(): List<File> = storageVolumes().map { it.second }
+        override fun runTask(errorPrefix: String, block: () -> Unit) = runOnWorker(errorPrefix, block)
+        override fun currentProgress(): OperationProgress? = activeProgress
+        override fun setStatus(text: String) { runOnUiThread { status.text = text } }
+        override fun refreshFiles() { runOnUiThread { loadDirectory(currentDir) } }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) purgeStaleCache()
+        if (savedInstanceState == null) {
+            purgeStaleCache()
+            SecureVault.purgeOpened(this)
+        }
         restoreOperationHistory()
+        features = FeatureUi(featureHost)
+        features.applyWindowSecurity()
+        OperationNotifier.ensureChannels(this)
+        try { ArchiveSchedule.rescheduleAll(this) } catch (_: Exception) { /* scheduling is best effort at startup */ }
         buildInterface()
         if (savedInstanceState == null) handleViewIntent(intent)
     }
@@ -129,6 +167,56 @@ class MainActivity : Activity() {
             } else showPermissionState(true)
         }
         if (currentTab == 1) refreshArchiveLibrary(false)
+        features.lockIfNeeded()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        appInForeground = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        appInForeground = false
+        features.onAppStopped()
+    }
+
+    /** The user is leaving while a long operation runs: keep the process alive with the foreground service. */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (activeProgress != null) ensureOperationService()
+    }
+
+    override fun onDestroy() {
+        tickHandler.removeCallbacksAndMessages(null)
+        features.onDestroy()
+        super.onDestroy()
+    }
+
+    private fun startProgressTicker() {
+        tickHandler.removeCallbacks(progressTicker)
+        tickHandler.post(progressTicker)
+    }
+
+    private fun refreshProgressStrip() {
+        if (!::progressStrip.isInitialized) return
+        val progress = activeProgress
+        progressStrip.refresh(progress)
+        if (progress == null && operationServiceRunning) {
+            OperationService.stop(this)
+            operationServiceRunning = false
+        }
+    }
+
+    private fun ensureOperationService() {
+        val progress = activeProgress ?: return
+        if (operationServiceRunning) return
+        OperationService.start(this, progress.label)
+        operationServiceRunning = true
+        if (!notificationsAsked) {
+            notificationsAsked = true
+            features.requestNotificationPermission()
+        }
     }
 
     /** Working copies made from system-picker files never outlive the process that made them. */
@@ -148,6 +236,10 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
+        if (features.isLocked) {
+            moveTaskToBack(true)
+            return
+        }
         when {
             currentTab == 0 && selection.isNotEmpty() -> { selection.clear(); refreshFileViews() }
             currentTab == 0 && (searchQuery.isNotEmpty() || activeFilter != FILTER_ALL) -> { resetFileFilters(); applyFileViewChange() }
@@ -251,6 +343,20 @@ class MainActivity : Activity() {
         pageTitle = label(TAB_TITLES[0], 11f, 0xFFA9BEE3.toInt(), false)
         titles.addView(pageTitle)
         header.addView(titles, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
+        val toolsButton = TextView(this).apply {
+            text = "أدوات"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            background = rounded(0xFF2A4678.toInt(), 14)
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            isClickable = true
+            isFocusable = true
+            contentDescription = "أدوات QAMZOR"
+            setOnClickListener { features.showToolsMenu() }
+        }
+        header.addView(toolsButton, LinearLayout.LayoutParams(-2, -2))
         shell.addView(header, LinearLayout.LayoutParams(-1, -2))
 
         status = TextView(this).apply {
@@ -273,6 +379,11 @@ class MainActivity : Activity() {
         for (page in pages) pageHost.addView(page, FrameLayout.LayoutParams(-1, -1))
         shell.addView(pageHost, LinearLayout.LayoutParams(-1, 0, 1f))
         shell.addView(status, LinearLayout.LayoutParams(-1, -2))
+        progressStrip = OperationStrip(UiKit(this)) {
+            activeProgress?.cancel()
+            refreshProgressStrip()
+        }
+        shell.addView(progressStrip.view, LinearLayout.LayoutParams(-1, -2))
 
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1168,6 +1279,18 @@ class MainActivity : Activity() {
                     shape.reset(); shape.moveTo(4f, 20f); shape.lineTo(5f, 15f); shape.lineTo(16f, 4f); shape.lineTo(20f, 8f); shape.lineTo(9f, 19f); shape.close()
                     canvas.drawPath(shape, stroke)
                 }
+                "share" -> {
+                    canvas.drawCircle(18f, 5.5f, 2.6f, stroke)
+                    canvas.drawCircle(6f, 12f, 2.6f, stroke)
+                    canvas.drawCircle(18f, 18.5f, 2.6f, stroke)
+                    canvas.drawLine(8.3f, 10.8f, 15.7f, 6.8f, stroke)
+                    canvas.drawLine(8.3f, 13.2f, 15.7f, 17.2f, stroke)
+                }
+                "clock" -> {
+                    canvas.drawCircle(12f, 12f, 9f, stroke)
+                    canvas.drawLine(12f, 7f, 12f, 12f, stroke)
+                    canvas.drawLine(12f, 12f, 16f, 14f, stroke)
+                }
                 else -> canvas.drawCircle(12f, 12f, 8f, stroke)
             }
             canvas.restore()
@@ -1232,6 +1355,25 @@ class MainActivity : Activity() {
             actions += SheetAction("archive", "إضافة إلى أرشيف QZRA…", false) { showArchiveDialog(listOf(file), false) }
             actions += SheetAction("lock", "حماية بكلمة مرور…", false) { showArchiveDialog(listOf(file), true) }
         }
+        if (isQzra(file)) {
+            actions += SheetAction("share", "مشاركة الأرشيف", false) { features.share(listOf(file)) }
+            actions += SheetAction("archive", "تقسيم لأجزاء (للإرسال)…", false) { features.showSplitDialog(file) }
+            actions += SheetAction("shield_check", "إنشاء بيانات استرجاع…", false) { features.createRecovery(file) }
+            if (features.sidecarFor(file).isFile) {
+                actions += SheetAction("shield_check", "فحص وإصلاح بملف الاسترجاع", false) { features.checkAndRepair(file) }
+            }
+        }
+        if (file.isFile && file.name.endsWith(".qzset", ignoreCase = true)) {
+            actions += SheetAction("convert", "دمج الأجزاء في أرشيف", false) { features.joinSet(file) }
+            actions += SheetAction("share", "مشاركة الأجزاء", false) { features.shareSet(file) }
+        }
+        if (file.isFile && file.name.endsWith(".qzrp", ignoreCase = true)) {
+            val owner = File(file.parentFile, file.name.removeSuffix(".qzrp").removeSuffix(".QZRP"))
+            if (owner.isFile) actions += SheetAction("shield_check", "فحص وإصلاح ${owner.name}", false) { features.checkAndRepair(owner, file) }
+        }
+        if (file.isFile && !isQzra(file)) actions += SheetAction("share", "مشاركة", false) { features.share(listOf(file)) }
+        actions += SheetAction("lock", "نقل إلى الخزنة السرية", false) { features.moveToVault(listOf(file)) }
+        actions += SheetAction("clock", "أرشفة تلقائية مجدولة…", false) { features.showScheduleEditor(file) }
         actions += SheetAction("edit", "إعادة تسمية", false) { promptRename(file) }
         actions += SheetAction("info", "التفاصيل", false) { showDetails(file) }
         actions += SheetAction("trash", "حذف", true) { confirmDelete(listOf(file)) }
@@ -1246,6 +1388,8 @@ class MainActivity : Activity() {
             actions += SheetAction("compare", "مقارنة الأرشيفين", false) { compareArchiveFiles(chosen[0], chosen[1]) }
         }
         if (chosen.size == 1) actions += SheetAction("edit", "إعادة تسمية", false) { promptRename(chosen[0]) }
+        if (chosen.any { it.isFile }) actions += SheetAction("share", "مشاركة الملفات المحددة", false) { features.share(chosen.filter { it.isFile }) }
+        actions += SheetAction("lock", "نقل المحدد إلى الخزنة السرية", false) { features.moveToVault(chosen) }
         actions += SheetAction("close", "إلغاء التحديد", false) { selection.clear(); refreshFileViews() }
         showSheet("${chosen.size} عنصر محدد", "", actions)
     }
@@ -2019,46 +2163,71 @@ class MainActivity : Activity() {
 
     private fun promptArchivePassword(archive: File, name: String, temp: Boolean, afterAuthenticated: (() -> Unit)? = null) {
         val entry = dialogField("كلمة مرور الأرشيف")
+        val biometricId = "archive-" + java.security.MessageDigest.getInstance("SHA-256")
+            .digest(archive.absolutePath.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }.take(24)
+        val canRemember = !temp && BiometricSecrets.isAvailable(this)
+        val remember = CheckBox(this).apply {
+            text = "تذكّر كلمة المرور بالبصمة على هذا الجهاز"
+            visibility = if (canRemember) View.VISIBLE else View.GONE
+        }
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(2))
             addView(entry)
+            addView(remember)
         }
-        AlertDialog.Builder(this)
+        fun attempt(password: String, saveWithBiometric: Boolean, fromBiometric: Boolean) {
+            runOnWorker("تعذر فتح الأرشيف المشفّر") {
+                try {
+                    ArchiveEngine.browse(archive, "", password)
+                    val protectedPaths = ArchiveEngine.protectedFolders(archive, password).toSet()
+                    installOpenedArchive(archive, name, password, protectedPaths, temp)
+                    runOnUiThread {
+                        status.text = "تمت مصادقة الأرشيف المشفّر ✓" +
+                            if (protectedPaths.isEmpty()) "" else " • عناصر محمية: ${protectedPaths.size}"
+                        if (saveWithBiometric) {
+                            BiometricSecrets.store(this, biometricId, password, "حفظ كلمة مرور الأرشيف بالبصمة") { ok, message ->
+                                if (!ok) status.text = "لم تُحفظ كلمة المرور بالبصمة: ${message ?: ""}"
+                            }
+                        }
+                        if (afterAuthenticated != null) afterAuthenticated() else { selectTab(1); showVirtualExplorer("") }
+                    }
+                } catch (error: Exception) {
+                    // A stored password that no longer opens the archive is stale: forget it.
+                    if (fromBiometric) BiometricSecrets.remove(this, biometricId)
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle("تعذر فتح الأرشيف")
+                            .setMessage(error.message ?: "كلمة المرور غير صحيحة أو الأرشيف تالف")
+                            .setPositiveButton("إعادة المحاولة") { _, _ -> promptArchivePassword(archive, name, temp, afterAuthenticated) }
+                            .setNegativeButton("إغلاق", null)
+                            .show()
+                    }
+                }
+            }
+        }
+        val builder = AlertDialog.Builder(this)
             .setTitle("أرشيف QZRA مشفّر")
             .setMessage("أدخل كلمة مرور الأرشيف لفتح الفهرس وعرض الأسماء.")
             .setView(panel)
             .setPositiveButton("فتح الأرشيف") { _, _ ->
                 val password = entry.text.toString()
+                val save = remember.isChecked
                 entry.text?.clear()
                 if (password.isEmpty()) {
                     status.text = "يجب إدخال كلمة المرور للأرشيف المشفّر."
                 } else {
-                    runOnWorker("تعذر فتح الأرشيف المشفّر") {
-                        try {
-                            ArchiveEngine.browse(archive, "", password)
-                            val protectedPaths = ArchiveEngine.protectedFolders(archive, password).toSet()
-                            installOpenedArchive(archive, name, password, protectedPaths, temp)
-                            runOnUiThread {
-                                status.text = "تمت مصادقة الأرشيف المشفّر ✓" +
-                                    if (protectedPaths.isEmpty()) "" else " • عناصر محمية: ${protectedPaths.size}"
-                                if (afterAuthenticated != null) afterAuthenticated() else { selectTab(1); showVirtualExplorer("") }
-                            }
-                        } catch (error: Exception) {
-                            runOnUiThread {
-                                AlertDialog.Builder(this)
-                                    .setTitle("تعذر فتح الأرشيف")
-                                    .setMessage(error.message ?: "كلمة المرور غير صحيحة أو الأرشيف تالف")
-                                    .setPositiveButton("إعادة المحاولة") { _, _ -> promptArchivePassword(archive, name, temp, afterAuthenticated) }
-                                    .setNegativeButton("إغلاق", null)
-                                    .show()
-                            }
-                        }
-                    }
+                    attempt(password, save, false)
                 }
             }
             .setNegativeButton("إلغاء", null)
-            .show()
+        if (canRemember && BiometricSecrets.has(this, biometricId)) {
+            builder.setNeutralButton("بالبصمة") { _, _ ->
+                BiometricSecrets.retrieve(this, biometricId, "فتح الأرشيف المشفّر",
+                    { secret -> attempt(secret, false, true) }, { message -> status.text = message })
+            }
+        }
+        builder.show()
     }
 
     // ───────────────────────────── Extract / verify / compare ─────────────────────────────
@@ -2178,6 +2347,14 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_ALL_FILES) {
             if (hasStorageAccess()) loadDirectory(currentDir)
+            return
+        }
+        if (requestCode == AppLock.REQUEST_CREDENTIAL) {
+            features.onCredentialResult(resultCode == RESULT_OK)
+            return
+        }
+        if (requestCode == FeatureUi.REQUEST_VAULT_PICK) {
+            if (resultCode == RESULT_OK) features.onVaultPicked(data)
             return
         }
         if (resultCode != RESULT_OK || data == null) return
@@ -2535,6 +2712,17 @@ class MainActivity : Activity() {
         "فشل فحص مجلد محمي" -> "فحص مجلد محمي"
         "تعذرت معاينة الملف" -> "معاينة الملف"
         "كلمة مرور المجلد غير صحيحة" -> "فتح العنصر المحمي"
+        "فشل البحث عن الملفات المكررة" -> "البحث عن الملفات المكررة"
+        "فشل حذف الملفات المكررة" -> "حذف الملفات المكررة"
+        "فشل تقسيم الأرشيف" -> "تقسيم الأرشيف"
+        "فشل دمج الأجزاء" -> "دمج الأجزاء"
+        "فشل إنشاء بيانات الاسترجاع" -> "إنشاء بيانات الاسترجاع"
+        "فشل فحص الأرشيف بملف الاسترجاع" -> "فحص الأرشيف بملف الاسترجاع"
+        "فشل إصلاح الأرشيف" -> "إصلاح الأرشيف"
+        "فشل نقل الملفات إلى الخزنة" -> "نقل الملفات إلى الخزنة"
+        "فشل فتح عنصر الخزنة" -> "فتح عنصر الخزنة"
+        "فشل تصدير عنصر الخزنة" -> "تصدير عنصر الخزنة"
+        "فشل حذف عنصر الخزنة" -> "حذف عنصر الخزنة"
         else -> "العملية"
     }
 
@@ -2546,6 +2734,8 @@ class MainActivity : Activity() {
                 activeOperationLabel = name
                 val startedAt = System.currentTimeMillis()
                 activeOperationStartedAt = startedAt
+                val progress = OperationProgress(name)
+                activeProgress = progress
                 operationPreferences().edit()
                     .putInt("active_pid", android.os.Process.myPid())
                     .putString("active_label", name)
@@ -2553,13 +2743,16 @@ class MainActivity : Activity() {
                     .apply()
                 recordOperationEvent("[${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(startedAt))}] قيد التنفيذ — $name")
                 // Keep a more specific "جارٍ …" message the caller already set; otherwise show a neutral progress line.
-                runOnUiThread { if (!status.text.toString().startsWith("جارٍ")) status.text = "جارٍ التنفيذ: $name" }
+                runOnUiThread {
+                    if (!status.text.toString().startsWith("جارٍ")) status.text = "جارٍ التنفيذ: $name"
+                    startProgressTicker()
+                }
                 // The outcome is decided ONLY by block(). Bookkeeping (log + status line) runs afterwards and can never
                 // turn a finished operation into a "failed" one.
                 try {
                 var failure: Throwable? = null
                 try {
-                    block()
+                    ArchiveEngine.withProgress(progress) { block() }
                 } catch (error: Throwable) {
                     failure = error
                 }
@@ -2569,12 +2762,20 @@ class MainActivity : Activity() {
                     try { recordOperationEvent("[$stamp] اكتملت — $name") } catch (_: Throwable) { /* log only */ }
                     // Replace a leftover progress line only; a result message set by the block is kept.
                     runOnUiThread { if (status.text.toString().startsWith("جارٍ")) status.text = "اكتملت: $name" }
+                    if (!appInForeground) OperationNotifier.notifyResult(this@MainActivity, name, "اكتملت العملية بنجاح.")
+                } else if (err is OperationCancelledException) {
+                    try { recordOperationEvent("[$stamp] أُلغيت — $name") } catch (_: Throwable) { /* log only */ }
+                    runOnUiThread { status.text = "تم إلغاء العملية: $name (لم يُحفظ أي ناتج جزئي)" }
+                    if (!appInForeground) OperationNotifier.notifyResult(this@MainActivity, name, "تم إلغاء العملية.")
                 } else {
                     val reason = err.message ?: err.javaClass.simpleName
                     try { recordOperationEvent("[$stamp] فشلت — $name: $reason") } catch (_: Throwable) { /* log only */ }
                     runOnUiThread { status.text = "$errorPrefix: $reason" }
+                    if (!appInForeground) OperationNotifier.notifyResult(this@MainActivity, name, "$errorPrefix: $reason")
                 }
                 } finally {
+                    activeProgress = null
+                    runOnUiThread { refreshProgressStrip() }
                     operationPreferences().edit()
                         .remove("active_pid").remove("active_label").remove("active_started_at").apply()
                     activeOperationLabel = null
